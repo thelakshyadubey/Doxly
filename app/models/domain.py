@@ -63,7 +63,7 @@ class OCRResult(BaseModel):
         ..., ge=0.0, le=1.0, description="Aggregate OCR confidence score [0, 1]"
     )
     page_count: int = Field(default=1, ge=1)
-    language: str = Field(default="en", description="BCP-47 language code detected by Vision API")
+    language: str = Field(default="en", description="BCP-47 language code detected by OCR")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -36,13 +36,6 @@ class Settings(BaseSettings):
         description="Gemini model ID used for vector embeddings",
     )
 
-    # ── Google Cloud (Vision API — service account) ───────────────────────────
-    google_cloud_project: str = Field(..., description="GCP project ID for Vision API billing")
-    google_application_credentials: str = Field(
-        default="./service_account.json",
-        description="Path to GCP service account JSON key file (Vision API only)",
-    )
-
     # ── Google OAuth 2.0 (per-user Drive access) ──────────────────────────────
     google_oauth_client_id: str = Field(
         ..., description="OAuth 2.0 client ID from Google Cloud Console"

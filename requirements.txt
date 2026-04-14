@@ -14,9 +14,6 @@ structlog==24.1.0
 # ── Google Gemini ─────────────────────────────────────────────────────────────
 google-generativeai==0.5.4
 
-# ── Google Cloud Vision (OCR) ─────────────────────────────────────────────────
-google-cloud-vision==3.7.2
-
 # ── Google Drive ─────────────────────────────────────────────────────────────
 google-auth==2.29.0
 google-auth-oauthlib==1.2.0

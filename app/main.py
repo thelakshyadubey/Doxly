@@ -99,9 +99,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await redis_store.connect()
     app.state.redis_store = redis_store
 
-    # 6. OCR service (connect() creates the Vision client synchronously)
-    ocr_service = OCRService(project_id=settings.google_cloud_project)
-    await asyncio.to_thread(ocr_service.connect)
+    # 6. OCR service (uses the already-configured Gemini model)
+    ocr_service = OCRService(model=gemini_model)
+    ocr_service.connect()
     app.state.ocr_service = ocr_service
 
     # 7. Drive service (factory — no shared connection, per-user clients built on demand)

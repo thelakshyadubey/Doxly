@@ -158,7 +158,9 @@ async def upload_page(
 
     # OCR
     try:
-        ocr_result = await ocr_service.extract_text(image_bytes)
+        ocr_result = await ocr_service.extract_text(
+            image_bytes, mime_type=file.content_type or "image/jpeg"
+        )
     except Exception as exc:
         await logger.aerror("ingest.ocr_failed", session_id=session_id, error=str(exc))
         raise HTTPException(

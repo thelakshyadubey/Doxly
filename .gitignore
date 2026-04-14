@@ -1,2 +1,54 @@
-# Added by code-review-graph
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environment ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Environment & secrets ─────────────────────────────────────────────────────
+.env
+*.env
+service_account.json
+credentials.json
+token.json
+*_credentials.json
+
+# ── Qdrant local storage ──────────────────────────────────────────────────────
+qdrant_data/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Testing & coverage ────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# ── IDE & editor ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Tool caches ───────────────────────────────────────────────────────────────
 .code-review-graph/
+.mypy_cache/
+.ruff_cache/

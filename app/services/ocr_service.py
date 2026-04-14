@@ -1,154 +1,136 @@
 """
 app/services/ocr_service.py
 ============================
-Google Cloud Vision API wrapper for layout-aware OCR.
+Gemini multimodal OCR wrapper.
 
-Sends image bytes via ``DOCUMENT_TEXT_DETECTION`` and extracts the
-full_text_annotation, which preserves paragraph and page structure.
-All I/O is async — the synchronous Vision client is executed in a
-thread pool via ``asyncio.to_thread``.
+Sends image bytes to Gemini via a multimodal prompt and extracts the full
+document text with language detection.  All I/O is async — the synchronous
+Gemini call is executed in a thread pool via ``asyncio.to_thread``.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+import json
+from typing import Any
 
-from google.cloud import vision
+import google.generativeai as genai
+from google.generativeai.types import glm
 
 from app.models.domain import OCRResult
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+_OCR_PROMPT = (
+    "You are a precise OCR engine. Extract ALL text from this image exactly as it appears, "
+    "preserving paragraph and line breaks with newlines. "
+    "Do not summarize, interpret, correct, or add anything. "
+    "Return ONLY a JSON object with exactly two fields:\n"
+    '- "text": the complete extracted text\n'
+    '- "language": the BCP-47 language code of the dominant language '
+    '(e.g. "en", "hi", "fr"), or "und" if unknown.\n\n'
+    "JSON only — no markdown fences, no extra keys."
+)
+
 
 class OCRService:
     """
-    Thin async wrapper around the Google Cloud Vision ``ImageAnnotatorClient``.
-
-    The Vision client is instantiated once and reused.  Authentication is
-    handled automatically by the Google auth library using the credentials
-    pointed to by ``GOOGLE_APPLICATION_CREDENTIALS``.
+    Async wrapper around a Gemini multimodal model for OCR.
 
     Args:
-        project_id: GCP project ID (used for request attribution / billing).
+        model: Configured ``google.generativeai.GenerativeModel`` instance.
     """
 
-    def __init__(self, project_id: str) -> None:
-        self._project_id = project_id
-        self._client: Optional[vision.ImageAnnotatorClient] = None
+    def __init__(self, model: genai.GenerativeModel) -> None:
+        self._model = model
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def connect(self) -> None:
         """
-        Instantiate the Vision API client.
+        No-op kept for interface compatibility with the startup lifespan.
 
-        Must be called once during app lifespan startup.
+        The Gemini client is already initialised by the time this service is
+        constructed; there is nothing to connect.
         """
-        self._client = vision.ImageAnnotatorClient()
-        logger.info("ocr_service.connected", project=self._project_id)
+        logger.info("ocr_service.connected", backend="gemini")
 
     # ── Core OCR ──────────────────────────────────────────────────────────────
 
-    async def extract_text(self, image_bytes: bytes) -> OCRResult:
+    async def extract_text(
+        self,
+        image_bytes: bytes,
+        mime_type: str = "image/jpeg",
+    ) -> OCRResult:
         """
-        Run ``DOCUMENT_TEXT_DETECTION`` on a single image and return structured output.
+        Run multimodal OCR on a single image using Gemini.
 
-        The synchronous Vision API call is offloaded to a thread pool so the
+        The synchronous Gemini call is offloaded to a thread pool so the
         event loop is never blocked.
 
         Args:
             image_bytes: Raw bytes of a JPEG, PNG, TIFF, or PDF page.
+            mime_type:   MIME type of the image (default: ``image/jpeg``).
 
         Returns:
-            ``OCRResult`` with extracted text, aggregate confidence, page count,
-            and detected language.
+            ``OCRResult`` with extracted text, ``confidence=1.0``,
+            ``page_count=1``, and the detected BCP-47 language code.
 
         Raises:
-            RuntimeError: If the Vision API returns an error response.
+            RuntimeError: If Gemini returns an empty response.
         """
-        result = await asyncio.to_thread(self._run_ocr, image_bytes)
-        return result
+        return await asyncio.to_thread(self._run_ocr, image_bytes, mime_type)
 
-    def _run_ocr(self, image_bytes: bytes) -> OCRResult:
+    def _run_ocr(self, image_bytes: bytes, mime_type: str) -> OCRResult:
         """
-        Synchronous Vision API call — must not be called directly from async code.
+        Synchronous Gemini call — must not be called directly from async code.
 
         Args:
             image_bytes: Raw image bytes.
+            mime_type:   MIME type of the image.
 
         Returns:
-            ``OCRResult`` populated from the Vision API response.
+            ``OCRResult`` populated from the Gemini response.
 
         Raises:
-            RuntimeError: On Vision API error.
+            RuntimeError: If Gemini returns an empty response.
         """
-        image = vision.Image(content=image_bytes)
-        response = self._client.document_text_detection(image=image)
+        image_part = glm.Part(
+            inline_data=glm.Blob(mime_type=mime_type, data=image_bytes)
+        )
+        response = self._model.generate_content([image_part, _OCR_PROMPT])
 
-        if response.error.message:
-            raise RuntimeError(
-                f"Vision API error: {response.error.message} "
-                f"(code {response.error.code})"
-            )
-
-        full_annotation = response.full_text_annotation
-
-        if not full_annotation or not full_annotation.text:
+        raw = response.text.strip() if response.text else ""
+        if not raw:
             logger.warning("ocr_service.empty_result")
             return OCRResult(text="", confidence=0.0, page_count=1, language="und")
 
-        # Aggregate confidence from all blocks across all pages
-        confidences: list[float] = []
-        page_count = len(full_annotation.pages)
-        page_texts: list[str] = []
+        # Strip markdown fences in case Gemini wraps the JSON despite instructions
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1]
+            if raw.endswith("```"):
+                raw = raw[: raw.rfind("```")]
+        raw = raw.strip()
 
-        for page in full_annotation.pages:
-            for block in page.blocks:
-                if block.confidence > 0:
-                    confidences.append(block.confidence)
-            # Reconstruct per-page text from paragraph text segments
-            page_text_parts: list[str] = []
-            for block in page.blocks:
-                for paragraph in block.paragraphs:
-                    para_text = "".join(
-                        "".join(symbol.text for symbol in word.symbols)
-                        for word in paragraph.words
-                    )
-                    if para_text:
-                        page_text_parts.append(para_text)
-            page_texts.append(" ".join(page_text_parts))
-
-        avg_confidence = (
-            sum(confidences) / len(confidences) if confidences else 0.0
-        )
-
-        # For multi-page documents insert [PAGE_BREAK] between pages;
-        # for single-page use full_text_annotation.text directly (preserves layout).
-        if page_count > 1:
-            full_text = "\n[PAGE_BREAK]\n".join(page_texts)
-        else:
-            full_text = full_annotation.text
-
-        # Detect dominant language from the first page's detected languages
-        language = "und"
-        if full_annotation.pages:
-            first_page = full_annotation.pages[0]
-            if first_page.property and first_page.property.detected_languages:
-                language = first_page.property.detected_languages[0].language_code
+        text: str
+        language: str
+        try:
+            data: dict[str, Any] = json.loads(raw)
+            text = data.get("text", "")
+            language = data.get("language", "und") or "und"
+        except json.JSONDecodeError:
+            # Gemini returned plain text instead of JSON — use as-is
+            logger.warning("ocr_service.json_parse_failed", falling_back_to_raw_text=True)
+            text = raw
+            language = "und"
 
         logger.info(
             "ocr_service.extracted",
-            chars=len(full_text),
-            pages=page_count,
-            confidence=round(avg_confidence, 3),
+            chars=len(text),
+            pages=1,
+            backend="gemini",
             language=language,
         )
 
-        return OCRResult(
-            text=full_text,
-            confidence=avg_confidence,
-            page_count=max(page_count, 1),
-            language=language or "und",
-        )
+        return OCRResult(text=text, confidence=1.0, page_count=1, language=language)
