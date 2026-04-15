@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import Any, AsyncIterator, Callable, Coroutine
 
 import google.generativeai as genai
 from fastapi import FastAPI, Request
@@ -39,6 +39,45 @@ from backend.app.stores.redis_store import RedisStore
 from backend.app.utils.logger import configure_logging, get_logger
 
 logger = get_logger(__name__)
+
+_RETRY_ATTEMPTS = 3
+_RETRY_DELAY = 3  # seconds between attempts
+
+
+async def _connect_with_retry(
+    name: str,
+    fn: Callable[[], Coroutine[Any, Any, None]],
+) -> bool:
+    """
+    Call an async initialisation coroutine up to ``_RETRY_ATTEMPTS`` times.
+
+    Returns True on success, False if all attempts fail.  On failure the app
+    continues in degraded mode — callers must set the store to None and let
+    the dependency layer return 503s.
+    """
+    for attempt in range(1, _RETRY_ATTEMPTS + 1):
+        try:
+            await fn()
+            await logger.ainfo(f"startup.{name}_ready", attempt=attempt)
+            return True
+        except Exception as exc:
+            await logger.awarning(
+                f"startup.{name}_attempt_failed",
+                attempt=attempt,
+                max_attempts=_RETRY_ATTEMPTS,
+                error=str(exc),
+            )
+            if attempt < _RETRY_ATTEMPTS:
+                await asyncio.sleep(_RETRY_DELAY)
+
+    await logger.aerror(
+        f"startup.{name}_unavailable",
+        detail=(
+            f"All {_RETRY_ATTEMPTS} connection attempts failed. "
+            f"Routes that depend on {name} will return 503 until it is reachable."
+        ),
+    )
+    return False
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -69,7 +108,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         embedding_model=settings.gemini_embedding_model,
     )
 
-    # 3. Qdrant
+    # 3. Qdrant — connect + initialize with retry; degrade gracefully on failure
     qdrant_store = QdrantStore(
         qdrant_url=settings.qdrant_url,
         qdrant_api_key=settings.qdrant_api_key,
@@ -78,27 +117,39 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         vector_size=settings.qdrant_vector_size,
         batch_size=settings.embedding_batch_size,
     )
-    await asyncio.to_thread(qdrant_store.connect)
-    await asyncio.to_thread(qdrant_store.initialize)
-    app.state.qdrant_store = qdrant_store
 
-    # 4. Neo4j
+    async def _init_qdrant() -> None:
+        await asyncio.to_thread(qdrant_store.connect)
+        await asyncio.to_thread(qdrant_store.initialize)
+
+    app.state.qdrant_store = qdrant_store if await _connect_with_retry("qdrant", _init_qdrant) else None
+
+    # 4. Neo4j — connect + initialize with retry; degrade gracefully on failure
     neo4j_store = Neo4jStore(
         uri=settings.neo4j_uri,
         user=settings.neo4j_user,
         password=settings.neo4j_password,
     )
-    await neo4j_store.connect()
-    await neo4j_store.initialize()
-    app.state.neo4j_store = neo4j_store
 
-    # 5. Redis
+    async def _init_neo4j() -> None:
+        await neo4j_store.connect()
+        await neo4j_store.initialize()
+
+    app.state.neo4j_store = neo4j_store if await _connect_with_retry("neo4j", _init_neo4j) else None
+
+    # 5. Redis — required for auth; retry with graceful degradation
     redis_store = RedisStore(
         redis_url=settings.redis_url,
         session_threshold_seconds=settings.session_threshold_seconds,
     )
-    await redis_store.connect()
-    app.state.redis_store = redis_store
+
+    async def _init_redis() -> None:
+        await redis_store.connect()
+        # Eagerly verify the connection so failures surface here, not at request time
+        if not await redis_store.ping():
+            raise ConnectionError("Redis ping failed")
+
+    app.state.redis_store = redis_store if await _connect_with_retry("redis", _init_redis) else None
 
     # 6. OCR service (uses the already-configured Gemini model)
     ocr_service = OCRService(model=gemini_model)
@@ -120,9 +171,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
     await logger.ainfo("shutdown.starting")
-    await asyncio.to_thread(qdrant_store.close)
-    await neo4j_store.close()
-    await redis_store.close()
+    if app.state.qdrant_store is not None:
+        await asyncio.to_thread(qdrant_store.close)
+    if app.state.neo4j_store is not None:
+        await neo4j_store.close()
+    if app.state.redis_store is not None:
+        await redis_store.close()
     await logger.ainfo("shutdown.complete")
 
 
@@ -151,10 +205,22 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
     )
 
-    # CORS — restrict in production by setting allowed origins in settings
+    # CORS — allow_origins=["*"] is incompatible with allow_credentials=True per
+    # the CORS spec. Explicitly list allowed origins instead.
+    # settings.frontend_url is included automatically; extend the list below for
+    # additional environments (staging, production).
+    allowed_origins = list(
+        {
+            settings.frontend_url,
+            "http://localhost:5173",   # Vite dev server default
+            "http://localhost:4173",   # Vite preview server default
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:4173",
+        }
+    )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=allowed_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

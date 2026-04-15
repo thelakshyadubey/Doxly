@@ -80,6 +80,7 @@ class QdrantStore:
             self._client = QdrantClient(
                 url=self._qdrant_url,
                 api_key=self._qdrant_api_key or None,
+                timeout=10,  # fail fast — avoids 30-90 s OS-level TCP timeout
             )
             logger.info("qdrant_store.connected_cloud", url=self._qdrant_url)
         else:

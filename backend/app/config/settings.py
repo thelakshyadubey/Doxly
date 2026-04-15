@@ -105,6 +105,10 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     app_host: str = Field(default="0.0.0.0")
     app_port: int = Field(default=8000)
+    frontend_url: str = Field(
+        default="http://localhost:5173",
+        description="Frontend origin — OAuth callback redirects here after authorization.",
+    )
 
     @field_validator("log_level")
     @classmethod

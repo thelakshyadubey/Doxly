@@ -30,8 +30,8 @@ from __future__ import annotations
 
 import asyncio
 import secrets
-from typing import Optional
 
+import httpx
 from google_auth_oauthlib.flow import Flow
 
 from backend.app.stores.redis_store import RedisStore
@@ -143,15 +143,43 @@ class AuthService:
         await asyncio.to_thread(flow.fetch_token, code=code)
 
         tokens = _credentials_to_dict(flow.credentials)
+
+        # Fetch the user's real email from Google — this becomes the canonical
+        # user_id so the frontend never needs to ask the user to type it.
+        email = await _get_google_email(tokens["token"])
+
         await logger.ainfo(
             "auth_service.tokens_exchanged",
-            user_id=user_id,
+            user_id=email,
             has_refresh_token=bool(tokens.get("refresh_token")),
         )
-        return user_id, tokens
+        return email, tokens
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+async def _get_google_email(access_token: str) -> str:
+    """
+    Fetch the authenticated user's email address from Google's userinfo endpoint.
+
+    Args:
+        access_token: A valid Google OAuth 2.0 access token with userinfo.email scope.
+
+    Returns:
+        The user's email address.
+
+    Raises:
+        httpx.HTTPStatusError: If the userinfo request fails.
+    """
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        return resp.json()["email"]
 
 
 def _credentials_to_dict(credentials) -> dict:

@@ -15,6 +15,7 @@ Session window rule:
 from __future__ import annotations
 
 import time
+import uuid
 
 from backend.app.models.domain import SessionMetadata, SessionStatus
 from backend.app.stores.redis_store import RedisStore
@@ -81,14 +82,26 @@ class SessionService:
 
         existing = await self._store.get_session(user_id, session_id)
         if existing is not None:
-            await logger.adebug(
-                "session_service.session_found",
-                session_id=session_id,
-                page_count=existing.page_count,
-            )
-            return existing
+            if existing.status in (SessionStatus.INDEXED, SessionStatus.FAILED):
+                # The bucket slot is already consumed by a completed session.
+                # Start a fresh session with a random ID so this new batch gets
+                # its own namespace without clobbering the finished one.
+                session_id = str(uuid.uuid4())
+                await logger.ainfo(
+                    "session_service.new_session_after_completed",
+                    previous_session_id=existing.session_id,
+                    new_session_id=session_id,
+                    previous_status=existing.status,
+                )
+            else:
+                await logger.adebug(
+                    "session_service.session_found",
+                    session_id=session_id,
+                    page_count=existing.page_count,
+                )
+                return existing
 
-        # First upload in this window — create session
+        # First upload in this window (or new batch after a completed one)
         session = SessionMetadata(
             user_id=user_id,
             session_id=session_id,

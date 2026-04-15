@@ -22,6 +22,8 @@ DELETE /auth/revoke?user_id={user_id}
 
 from __future__ import annotations
 
+from urllib.parse import urlencode
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 
@@ -96,7 +98,7 @@ async def callback(
     code: str = Query(..., description="Authorization code from Google"),
     state: str = Query(..., description="CSRF state token from Google"),
     settings: Settings = Depends(get_settings),
-) -> dict:
+) -> RedirectResponse:
     """
     Handle the OAuth 2.0 callback from Google.
 
@@ -107,7 +109,7 @@ async def callback(
         settings: Application settings.
 
     Returns:
-        JSON confirmation with ``user_id`` and ``authorized`` flag.
+        302 redirect to ``settings.frontend_url`` on success.
 
     Raises:
         422 if ``state`` is invalid or expired.
@@ -126,14 +128,10 @@ async def callback(
     await redis.save_user_tokens(user_id, tokens)
     await logger.ainfo("auth.callback_success", user_id=user_id)
 
-    return {
-        "authorized": True,
-        "user_id": user_id,
-        "message": (
-            "Google Drive authorization complete. "
-            "You may now upload documents via POST /ingest/upload."
-        ),
-    }
+    # Redirect back to the frontend with the canonical user_id (email) so the
+    # SPA can store it in localStorage without requiring the user to type it.
+    redirect_url = f"{settings.frontend_url}?{urlencode({'user_id': user_id})}"
+    return RedirectResponse(url=redirect_url, status_code=status.HTTP_302_FOUND)
 
 
 # ── GET /auth/status ──────────────────────────────────────────────────────────

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request, status
 
 from backend.app.config.settings import Settings, get_settings
 from backend.app.stores.neo4j_store import Neo4jStore
@@ -48,8 +48,17 @@ def get_qdrant(request: Request) -> QdrantStore:
 
     Returns:
         The application-wide ``QdrantStore`` instance.
+
+    Raises:
+        503 if Qdrant failed to connect at startup.
     """
-    return request.app.state.qdrant_store
+    store = request.app.state.qdrant_store
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Vector store is currently unavailable. Please try again later.",
+        )
+    return store
 
 
 def get_neo4j(request: Request) -> Neo4jStore:
@@ -61,8 +70,17 @@ def get_neo4j(request: Request) -> Neo4jStore:
 
     Returns:
         The application-wide ``Neo4jStore`` instance.
+
+    Raises:
+        503 if Neo4j failed to connect at startup.
     """
-    return request.app.state.neo4j_store
+    store = request.app.state.neo4j_store
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Graph store is currently unavailable. Please try again later.",
+        )
+    return store
 
 
 def get_redis(request: Request) -> RedisStore:
@@ -74,8 +92,17 @@ def get_redis(request: Request) -> RedisStore:
 
     Returns:
         The application-wide ``RedisStore`` instance.
+
+    Raises:
+        503 if Redis failed to connect at startup.
     """
-    return request.app.state.redis_store
+    store = request.app.state.redis_store
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Session store is currently unavailable. Please try again later.",
+        )
+    return store
 
 
 # ── Gemini client ──────────────────────────────────────────────────────────────
