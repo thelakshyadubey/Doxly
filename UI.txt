@@ -1,0 +1,457 @@
+╔══════════════════════════════════════════════════════════════╗
+║        DOCUMENT INTELLIGENCE — FRONTEND BUILD SPEC          ║
+║                    for Antigravity / Gemini                  ║
+╚══════════════════════════════════════════════════════════════╝
+
+You are building a complete, production-ready React + Tailwind CSS 
+frontend for a "Document Intelligence" application. Users upload 
+document images, the backend runs AI-powered OCR + classification + 
+embedding pipelines, and users can then ask natural language questions 
+about their documents and get AI-generated answers with citations.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 1 — TECH STACK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- React (functional components + hooks only)
+- Tailwind CSS for all styling
+- Axios or native fetch for all HTTP requests
+- Native EventSource API for SSE streaming
+- Environment variable: VITE_API_BASE_URL=http://localhost:8000
+  → use import.meta.env.VITE_API_BASE_URL as the base for all calls
+- No mock data anywhere — every piece of data comes from the real API
+- No API key, no Authorization header — only user_id is needed
+- Export clean, separate component files
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 2 — AUTHENTICATION MODEL (read carefully)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+There is NO JWT, no session cookie, no Authorization header.
+Auth is Google OAuth 2.0 — but all token storage happens server-side
+in Redis. The frontend never sees or handles any token.
+
+The only thing the frontend manages is the user_id:
+  - user_id is an opaque string (e.g. the user's email)
+  - On first visit, prompt the user to enter their email as user_id
+  - Store user_id in localStorage for persistence across sessions
+  - Pass user_id in EVERY API request (body, query param, or form field)
+
+The frontend's only auth responsibilities:
+  1. Check if the user is already authorized via GET /auth/status
+  2. If not, redirect them to GET /auth/login to start the Google OAuth flow
+  3. Provide a "Revoke Access" button that calls DELETE /auth/revoke
+  4. The /auth/callback route is handled entirely by the backend —
+     the frontend must NEVER call it directly
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 3 — ALL API ENDPOINTS (implement every single one)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BASE URL: http://localhost:8000  (via VITE_API_BASE_URL env var)
+API DOCS: http://localhost:8000/docs  (Swagger, for reference)
+
+────────────────────────────────────────────────────────────
+HEALTH
+────────────────────────────────────────────────────────────
+
+GET /health/live
+  Purpose  : Liveness probe — is the server process running?
+  Request  : none
+  Response : { "status": "ok" }
+  Usage    : Call on app load. If anything other than "ok" is
+             returned, show a full-screen "Server Offline" banner
+             and block ALL user interaction until it recovers.
+
+GET /health/ready
+  Purpose  : Readiness probe — are all dependencies healthy?
+  Request  : none
+  Response 200 (all healthy):
+    {
+      "status": "ok",
+      "qdrant": true,
+      "neo4j":  true,
+      "redis":  true,
+      "details": {}
+    }
+  Response 503 (degraded):
+    {
+      "status": "degraded",
+      "qdrant": false,
+      "neo4j":  true,
+      "redis":  true,
+      "details": { "qdrant": "ping failed" }
+    }
+  Usage    : Show a persistent status bar on all screens with
+             individual green/red dot indicators for Qdrant,
+             Neo4j, and Redis. If any is false, show a yellow
+             warning banner: "One or more services are degraded."
+
+────────────────────────────────────────────────────────────
+AUTH
+────────────────────────────────────────────────────────────
+
+GET /auth/status?user_id={user_id}
+  Purpose  : Check if user has already authorized Google Drive.
+             Call this on every app load before showing any screen.
+  Response : { "user_id": "alice", "authorized": true | false }
+  Usage    : if authorized=false → show Connect screen
+             if authorized=true  → go to Upload screen
+
+GET /auth/login?user_id={user_id}
+  Purpose  : Start the Google OAuth 2.0 flow.
+             This is a browser redirect, NOT a fetch/axios call.
+             Do: window.location.href = `${BASE_URL}/auth/login?user_id=${user_id}`
+  Response : 302 redirect to Google's consent screen.
+             After user approves, Google redirects to /auth/callback
+             automatically — the frontend does NOT handle this.
+
+GET /auth/callback  (DO NOT CALL FROM FRONTEND)
+  This is called by Google automatically. After it completes,
+  optionally redirect the user to a success page or re-check
+  /auth/status to confirm authorization succeeded.
+
+DELETE /auth/revoke?user_id={user_id}
+  Purpose  : De-authorize the user, remove stored tokens.
+  Response : { "user_id": "alice", "authorized": false, "message": "Tokens revoked." }
+  Usage    : Triggered by a "Revoke Access" or "Logout" button.
+             After success, clear user_id from localStorage and
+             return to the landing/connect screen.
+
+────────────────────────────────────────────────────────────
+INGEST
+────────────────────────────────────────────────────────────
+
+POST /ingest/upload
+  Purpose  : Upload one document image page. OCR runs immediately.
+             The full pipeline runs only when /flush is called.
+  Request  : multipart/form-data
+               user_id  (string, form field, required)
+               file     (file, required — JPEG / PNG / TIFF / PDF page)
+  Response 202:
+    {
+      "session_id": "uuid-string",
+      "page_count": 1,
+      "status": "queued"
+    }
+  Error responses:
+    400 — empty file
+    401 — user has not completed OAuth (show re-auth prompt)
+    502 — OCR failed (show retry option)
+  Usage    : Call once per file. The session_id returned from
+             the first upload must be reused for all subsequent
+             uploads in the same batch. Always show upload progress
+             per file. Accumulate page_count across uploads.
+
+POST /ingest/flush/{session_id}?user_id={user_id}
+  Purpose  : Close the upload window and trigger the full AI pipeline:
+             classify → coreference resolution → chunking →
+             embedding → write to Qdrant + Neo4j.
+             This call BLOCKS until the entire pipeline completes.
+             It is idempotent — safe to call again if already INDEXED.
+  Path     : session_id (string)
+  Query    : user_id (string, required)
+  Body     : none
+  Response 200:
+    {
+      "session_id": "uuid-string",
+      "chunk_count": 24,
+      "entity_count": 8,
+      "doc_type": "invoice",
+      "status": "indexed"
+    }
+  Error responses:
+    401 — user has not completed OAuth
+    404 — session not found or expired
+    422 — pipeline validation error
+    500 — pipeline failed
+  Usage    : While waiting, show a full animated processing state
+             (spinner or step progress: classify → chunk → embed → store).
+             On success, show doc_type detected + chunk_count + entity_count
+             in a success card, then offer to proceed to the Query screen.
+
+────────────────────────────────────────────────────────────
+QUERY
+────────────────────────────────────────────────────────────
+
+POST /query
+  Purpose  : Ask a question. Returns a complete answer with citations.
+             Uses hybrid vector + graph retrieval, then Gemini generates
+             the answer. Waits for full response before returning.
+  Request body (JSON):
+    {
+      "user_id": "alice",
+      "query":   "What is the total amount on the invoice?",
+      "filters": {
+        "doc_type":   "invoice",       (optional — DocType enum)
+        "session_id": "uuid-string"    (optional — restrict to one session)
+      }
+    }
+  Response 200:
+    {
+      "answer":     "The total amount is $1,200.",
+      "citations":  [
+        {
+          "source":   "My Drive/DocumentIntelligence/session-id/invoice/page_1.jpg",
+          "page":     1,
+          "chunk_id": "uuid-string"
+        }
+      ],
+      "confidence": 0.87
+    }
+  Error: 500 — retrieval or generation failed
+
+GET /query/stream
+  Purpose  : Same as POST /query but streams the answer token-by-token
+             using Server-Sent Events (SSE).
+  IMPORTANT: filters must be passed as a JSON-encoded string, not an object.
+  Query params:
+    user_id  (string, required)
+    query    (string, required)
+    filters  (string, optional) — JSON-encoded filters object
+               Example: filters={"doc_type":"invoice","session_id":"uuid"}
+  Implementation:
+    const params = new URLSearchParams({ user_id, query });
+    if (filters) params.append('filters', JSON.stringify(filters));
+    const es = new EventSource(`${BASE_URL}/query/stream?${params}`);
+    es.onmessage = (e) => {
+      if (e.data === '[DONE]') { es.close(); return; }
+      appendTokenToAnswer(e.data);
+    };
+  Response : text/event-stream
+    Each event : data: {token text}
+    Final event: data: [DONE]
+  Error: 422 — invalid filters JSON | 500 — retrieval failed
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 4 — ALL DATA MODELS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DocType (string enum — use exactly these values in dropdowns):
+  "invoice" | "contract" | "letter" | "form" |
+  "note"    | "report"   | "receipt"| "other"
+
+SessionStatus (string enum — used for badge display):
+  "open"       → blue    (session accepting uploads)
+  "queued"     → yellow  (upload window closed, pipeline not started)
+  "processing" → orange  (pipeline is running)
+  "indexed"    → green   (fully stored in Qdrant + Neo4j — success)
+  "failed"     → red     (pipeline error)
+
+UploadResponse:
+  session_id  : string
+  page_count  : integer
+  status      : SessionStatus  (always "queued" on upload)
+
+FlushResponse:
+  session_id  : string
+  chunk_count : integer
+  entity_count: integer
+  doc_type    : DocType
+  status      : SessionStatus  (always "indexed" on success)
+
+QueryRequest:
+  user_id     : string   (required)
+  query       : string   (required, min length 1)
+  filters     : QueryFilters (optional)
+
+QueryFilters:
+  doc_type    : DocType | null  (optional)
+  session_id  : string | null   (optional)
+
+QueryResponse:
+  answer      : string
+  citations   : Citation[]
+  confidence  : float  [0.0 – 1.0]
+
+Citation:
+  source      : string   (Google Drive path of the source document)
+  page        : integer
+  chunk_id    : string   (UUID)
+
+ErrorResponse (returned on ALL 4xx and 5xx responses):
+  error       : string   (machine-readable code, e.g. "internal_server_error")
+  message     : string   (human-readable — ALWAYS display this in the UI)
+  detail      : any | null
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 5 — COMPLETE USER FLOW (screens in order)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+── SCREEN 0: SERVER CHECK (before anything renders) ──────────
+  1. Call GET /health/live
+     → If server is down: show full-screen "Server Offline" blocker.
+       Poll every 5 seconds. Unblock automatically when it recovers.
+     → If server is up: proceed to Screen 1.
+
+── SCREEN 1: IDENTITY / CONNECT ──────────────────────────────
+  1. Check localStorage for saved user_id.
+  2. If no user_id: show a clean landing page with:
+       - App name and brief description
+       - Input field: "Enter your email to get started"
+       - "Continue" button → saves user_id to localStorage
+  3. Once user_id is set, call GET /auth/status?user_id={user_id}
+     → authorized=false: show "Connect Google Drive" button
+       that does window.location.href = BASE_URL + /auth/login?user_id=...
+     → authorized=true: go to Screen 2 (Upload)
+  4. After Google OAuth redirects back, re-call /auth/status
+     to confirm authorization, then auto-navigate to Screen 2.
+
+── SCREEN 2: UPLOAD ──────────────────────────────────────────
+  1. Header shows: user_id, session status badge, "Revoke Access" button
+  2. Drag-and-drop zone (also click-to-browse):
+       - Accepts: JPEG, PNG, TIFF, PDF pages
+       - Shows file name + size preview before upload
+  3. "Upload Page" button → POST /ingest/upload
+       - Show per-file upload progress indicator
+       - On success: store session_id (from first upload), increment
+         page count display. Reuse same session_id for all subsequent
+         uploads in this batch.
+       - Show running list of uploaded pages with their page numbers
+       - Session status badge updates to "open" while uploading
+  4. "Process Documents" button (enabled after at least 1 upload):
+       → POST /ingest/flush/{session_id}?user_id={user_id}
+       → Show animated processing state:
+            Step 1: Classifying document type...
+            Step 2: Resolving coreferences...
+            Step 3: Chunking and embedding...
+            Step 4: Storing in knowledge graph...
+       → Session status badge updates to "processing" then "indexed"
+       → On success: show a result card with:
+            - Document type detected (doc_type)
+            - Number of chunks created (chunk_count)
+            - Number of entities extracted (entity_count)
+            - "Ask Questions" button → go to Screen 3
+       → On failure: show error message with retry option
+  5. "Start New Session" button: clears current session, allows
+     uploading a new batch (new session_id will be assigned)
+
+── SCREEN 3: QUERY ───────────────────────────────────────────
+  1. Header: user_id, "Upload More" button, "Revoke Access" button
+  2. Optional filters panel (collapsible):
+       - doc_type dropdown (all 8 DocType values, plus "All types")
+       - session_id text field (to restrict to one specific session)
+  3. Answer mode toggle:
+       - "Full Answer" → uses POST /query (returns complete answer at once)
+       - "Streaming"   → uses GET /query/stream (tokens appear live via SSE)
+  4. Question input (large textarea) + "Ask" button
+  5. Answer display area:
+       - Streaming mode: tokens appear one by one as they arrive
+       - Full mode: answer appears after loading spinner completes
+       - Confidence score displayed as a labeled progress bar
+         (e.g. 87% confidence — color: green >70%, yellow 40–70%, red <40%)
+       - Citations list below the answer:
+           Each citation shows: source path, page number, chunk_id
+           Style as clickable reference cards (even if not navigable)
+  6. Query history: show previous questions + answers in the same
+     session so the user can scroll back
+
+── SYSTEM STATUS BAR (persistent across all screens) ─────────
+  - Fixed at top or bottom of every screen
+  - Calls GET /health/ready on load and every 30 seconds
+  - Shows three indicators: Qdrant · Neo4j · Redis
+    Each: green dot = healthy, red dot = down, label beside it
+  - If any service is down: show a yellow "Services degraded" banner
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 6 — ERROR HANDLING (apply everywhere)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+All errors from the API follow this shape:
+  { "error": "machine_code", "message": "Human readable text", "detail": any | null }
+
+Rules:
+  - ALWAYS display the `message` field to the user (toast or inline)
+  - Log `error` and `detail` to the browser console for debugging
+  - Never show raw status codes to the user
+
+Specific cases:
+  400 (bad file)      → inline error below upload zone
+  401 (not authorized)→ show re-auth prompt with "Connect Google Drive" button
+  404 (session gone)  → "Session not found. Please start a new upload."
+  422 (validation)    → show message inline near the triggering input
+  500 (server error)  → toast: show message, offer retry button
+  502 (OCR failed)    → "OCR failed for this page. Try re-uploading." + retry
+  503 (degraded)      → already handled by status bar
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 7 — DESIGN SYSTEM & STYLE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Aesthetic: Clean, minimal, professional document tool.
+           Think: Notion meets ChatGPT meets a legal SaaS product.
+
+- Dark mode support preferred (or light/dark toggle)
+- Typography: clear hierarchy — large headings, readable body text
+- Cards with subtle borders for content sections
+- Drag-and-drop zone: dashed border, hover highlight
+- Session status badge: colored pill (see SessionStatus colors above)
+- Confidence bar: colored progress bar with percentage label
+- Processing steps: animated step indicator (not just a spinner)
+- Toast notifications for success/error (auto-dismiss after 4s)
+- Mobile responsive layout
+- Smooth transitions between screens (no jarring jumps)
+- Loading skeletons where appropriate while data fetches
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 8 — ENVIRONMENT & CONFIG
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+VITE_API_BASE_URL=http://localhost:8000
+
+- Read via: const BASE_URL = import.meta.env.VITE_API_BASE_URL
+- All API calls must use this variable — no hardcoded localhost URLs
+- CORS is configured to allow all origins (*) — no special headers needed
+- No API key, no Authorization header — user_id is the only identifier
+- Swagger UI available at: http://localhost:8000/docs (for your reference)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 9 — COMPONENT STRUCTURE (suggested)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/src
+  /components
+    StatusBar.jsx         → health/ready polling, Qdrant/Neo4j/Redis dots
+    ServerOfflineBanner.jsx → health/live blocker
+    IdentityScreen.jsx    → email input + localStorage
+    ConnectScreen.jsx     → Google OAuth redirect button
+    UploadScreen.jsx      → drag-drop, upload list, flush button
+    ProcessingSteps.jsx   → animated pipeline step indicator
+    QueryScreen.jsx       → filters, question input, answer display
+    AnswerDisplay.jsx     → streaming or full answer + confidence + citations
+    SessionBadge.jsx      → colored status pill
+    ToastNotification.jsx → error/success toasts
+  /api
+    auth.js               → status, revoke (login is a redirect, not fetch)
+    health.js             → live, ready
+    ingest.js             → upload, flush
+    query.js              → query (POST), stream (EventSource)
+  /hooks
+    useHealth.js          → polling hook for status bar
+    useSession.js         → session_id and page_count state
+    useUser.js            → user_id from localStorage
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CRITICAL REMINDERS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. NEVER call /auth/callback from the frontend — Google calls it.
+2. /auth/login is a browser redirect, NOT a fetch() call.
+3. /query/stream filters must be JSON.stringify()'d into the URL param.
+4. Reuse the same session_id across all uploads in one batch.
+5. /ingest/flush is a blocking call — keep the UI in loading state
+   until it fully resolves (may take 10–30 seconds).
+6. Display ErrorResponse.message to users. Log .error and .detail.
+7. user_id goes in every single request — body, query param, or form.
+8. Poll /health/live on load. Poll /health/ready every 30 seconds.
+9. No hardcoded URLs — always use VITE_API_BASE_URL.
+10. No mock data anywhere in the codebase.
