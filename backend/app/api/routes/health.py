@@ -13,12 +13,12 @@ import asyncio
 
 from fastapi import APIRouter, Depends, Response, status
 
-from app.api.dependencies import get_neo4j, get_qdrant, get_redis
-from app.models.api import LivenessResponse, ReadinessResponse
-from app.stores.neo4j_store import Neo4jStore
-from app.stores.qdrant_store import QdrantStore
-from app.stores.redis_store import RedisStore
-from app.utils.logger import get_logger
+from backend.app.api.dependencies import get_neo4j, get_qdrant, get_redis
+from backend.app.models.api import LivenessResponse, ReadinessResponse
+from backend.app.stores.neo4j_store import Neo4jStore
+from backend.app.stores.qdrant_store import QdrantStore
+from backend.app.stores.redis_store import RedisStore
+from backend.app.utils.logger import get_logger
 
 router = APIRouter(prefix="/health", tags=["health"])
 logger = get_logger(__name__)

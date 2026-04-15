@@ -27,8 +27,8 @@ from typing import Optional
 
 from neo4j import AsyncDriver, AsyncGraphDatabase
 
-from app.models.domain import Chunk, EntityMap, EntityMention
-from app.utils.logger import get_logger
+from backend.app.models.domain import Chunk, EntityMap, EntityMention
+from backend.app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

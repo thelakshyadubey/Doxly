@@ -20,8 +20,8 @@ from typing import Optional
 import redis.asyncio as aioredis
 from redis.asyncio import Redis
 
-from app.models.domain import SessionMetadata, SessionStatus
-from app.utils.logger import get_logger
+from backend.app.models.domain import SessionMetadata, SessionStatus
+from backend.app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

@@ -43,7 +43,7 @@ GET /auth/callback?code=...&state=...
 
 POST /ingest/upload
   → load tokens:{user_id} from Redis → DriveService.for_user(tokens) → UserDriveClient
-  → OCRService (Google Vision DOCUMENT_TEXT_DETECTION)
+  → OCRService (Gemini multimodal — image bytes → JSON {text, language})
   → SessionService (Redis window: floor(ts / threshold) bucket)
   → UserDriveClient.create_session_folder(session_id, "pending")
   → UserDriveClient.upload_bytes()        (original image → user's own Drive)
@@ -79,8 +79,9 @@ POST /query  /  GET /query/stream
 | Tenant isolation | Every Qdrant search has a mandatory `user_id` filter. |
 | Chunk IDs | Deterministic UUID5 from `(session_id, page_num, chunk_index)` → upserts are idempotent. |
 | Qdrant mode | `QDRANT_URL=""` → local persistent; set URL → cloud, zero code change. |
-| Async strategy | All I/O is async; synchronous clients (Qdrant, Vision, Drive) are wrapped in `asyncio.to_thread`. |
-| Embedding | `text-embedding-004`, 768-dim, `retrieval_document` for chunks / `retrieval_query` for queries. |
+| Async strategy | All I/O is async; synchronous clients (Qdrant, Gemini, Drive) are wrapped in `asyncio.to_thread`. |
+| Embedding | `text-embedding-004`, 3072-dim, `retrieval_document` for chunks / `retrieval_query` for queries. |
+| OCR engine | `OCRService` uses Gemini multimodal (`glm.Part` + `glm.Blob`). No GCP service account needed. Returns `OCRResult{text, confidence=1.0, page_count=1, language}`. |
 
 ### Auth flow (new)
 
@@ -106,6 +107,11 @@ POST /query  /  GET /query/stream
 
 `app/config/settings.py` — single `Settings(BaseSettings)` singleton via `lru_cache`. Every value comes from `.env`. Key properties: `qdrant_is_local` (drives client mode), `oauth_client_config` (returns the dict expected by `google_auth_oauthlib.flow.Flow`).
 
+**Required `.env` fields** (no defaults — app won't start without these):
+`GEMINI_API_KEY`, `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `NEO4J_URI`, `NEO4J_PASSWORD`, `REDIS_URL`
+
+**Removed fields** (no longer needed): `GOOGLE_CLOUD_PROJECT`, `GOOGLE_APPLICATION_CREDENTIALS` — Vision API is gone.
+
 ### Singletons on `app.state`
 
 `app/main.py` lifespan attaches: `qdrant_store`, `neo4j_store`, `redis_store`, `gemini_model`, `gemini_embed_model`, `ocr_service`, `drive_service`. Routes pull them via `app/api/dependencies.py`.
@@ -113,6 +119,10 @@ POST /query  /  GET /query/stream
 ### Logging
 
 `app/utils/logger.py` — structlog JSON pipeline. Every module: `logger = get_logger(__name__)`.
+
+### Frontend API client
+
+`api-client.ts` (project root) — type-safe TypeScript client wrapping all endpoints. Uses `fetch` + `EventSource` (no dependencies). Import and call `createApiClient(baseUrl)` or use the default `api` singleton. Set `VITE_API_BASE_URL` in the frontend `.env`.
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph

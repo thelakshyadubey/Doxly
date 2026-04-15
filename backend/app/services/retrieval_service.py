@@ -23,10 +23,10 @@ from typing import Any, Optional
 
 import google.generativeai as genai
 
-from app.models.domain import RankedChunk, ScoredChunk
-from app.stores.neo4j_store import Neo4jStore
-from app.stores.qdrant_store import QdrantStore
-from app.utils.logger import get_logger
+from backend.app.models.domain import RankedChunk, ScoredChunk
+from backend.app.stores.neo4j_store import Neo4jStore
+from backend.app.stores.qdrant_store import QdrantStore
+from backend.app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import time
 
-from app.models.domain import SessionMetadata, SessionStatus
-from app.stores.redis_store import RedisStore
-from app.utils.id_generator import compute_timestamp_bucket, make_session_id
-from app.utils.logger import get_logger
+from backend.app.models.domain import SessionMetadata, SessionStatus
+from backend.app.stores.redis_store import RedisStore
+from backend.app.utils.id_generator import compute_timestamp_bucket, make_session_id
+from backend.app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

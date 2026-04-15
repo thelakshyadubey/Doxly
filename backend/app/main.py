@@ -27,15 +27,16 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routes import auth, health, ingest, query
-from app.config.settings import get_settings
-from app.models.api import ErrorResponse
-from app.services.drive_service import DriveService
-from app.services.ocr_service import OCRService
-from app.stores.neo4j_store import Neo4jStore
-from app.stores.qdrant_store import QdrantStore
-from app.stores.redis_store import RedisStore
-from app.utils.logger import configure_logging, get_logger
+from backend.app.api.routes import auth
+from backend.app.api.routes import health, ingest, query
+from backend.app.config.settings import get_settings
+from backend.app.models.api import ErrorResponse
+from backend.app.services.drive_service import DriveService
+from backend.app.services.ocr_service import OCRService
+from backend.app.stores.neo4j_store import Neo4jStore
+from backend.app.stores.qdrant_store import QdrantStore
+from backend.app.stores.redis_store import RedisStore
+from backend.app.utils.logger import configure_logging, get_logger
 
 logger = get_logger(__name__)
 

@@ -34,8 +34,8 @@ from typing import Optional
 
 from google_auth_oauthlib.flow import Flow
 
-from app.stores.redis_store import RedisStore
-from app.utils.logger import get_logger
+from backend.app.stores.redis_store import RedisStore
+from backend.app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

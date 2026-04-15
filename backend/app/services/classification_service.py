@@ -22,9 +22,9 @@ from typing import Any
 
 import google.generativeai as genai
 
-from app.models.domain import ClassificationResult, DocType
-from app.utils.logger import get_logger
-from app.utils.token_counter import truncate_to_tokens
+from backend.app.models.domain import ClassificationResult, DocType
+from backend.app.utils.logger import get_logger
+from backend.app.utils.token_counter import truncate_to_tokens
 
 logger = get_logger(__name__)
 

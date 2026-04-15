@@ -25,10 +25,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 
-from app.config.settings import Settings, get_settings
-from app.services.auth_service import AuthService
-from app.stores.redis_store import RedisStore
-from app.utils.logger import get_logger
+from backend.app.config.settings import Settings, get_settings
+from backend.app.services.auth_service import AuthService
+from backend.app.stores.redis_store import RedisStore
+from backend.app.utils.logger import get_logger
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 logger = get_logger(__name__)

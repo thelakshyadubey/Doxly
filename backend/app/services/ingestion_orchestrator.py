@@ -24,15 +24,15 @@ from __future__ import annotations
 
 import asyncio
 
-from app.models.domain import DocType, SessionMetadata
-from app.services.chunking_service import ChunkingService
-from app.services.classification_service import ClassificationService
-from app.services.coref_service import CorefService
-from app.services.drive_service import UserDriveClient
-from app.services.session_service import SessionService
-from app.stores.neo4j_store import Neo4jStore
-from app.stores.qdrant_store import QdrantStore
-from app.utils.logger import get_logger
+from backend.app.models.domain import DocType, SessionMetadata
+from backend.app.services.chunking_service import ChunkingService
+from backend.app.services.classification_service import ClassificationService
+from backend.app.services.coref_service import CorefService
+from backend.app.services.drive_service import UserDriveClient
+from backend.app.services.session_service import SessionService
+from backend.app.stores.neo4j_store import Neo4jStore
+from backend.app.stores.qdrant_store import QdrantStore
+from backend.app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

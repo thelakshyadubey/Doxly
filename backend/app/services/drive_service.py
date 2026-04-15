@@ -31,7 +31,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
-from app.utils.logger import get_logger
+from backend.app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

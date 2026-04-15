@@ -15,10 +15,10 @@ from typing import Any
 
 from fastapi import Depends, Request
 
-from app.config.settings import Settings, get_settings
-from app.stores.neo4j_store import Neo4jStore
-from app.stores.qdrant_store import QdrantStore
-from app.stores.redis_store import RedisStore
+from backend.app.config.settings import Settings, get_settings
+from backend.app.stores.neo4j_store import Neo4jStore
+from backend.app.stores.qdrant_store import QdrantStore
+from backend.app.stores.redis_store import RedisStore
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────

@@ -27,8 +27,8 @@ from qdrant_client.http.models import (
     VectorParams,
 )
 
-from app.models.domain import EmbeddedChunk, ScoredChunk
-from app.utils.logger import get_logger
+from backend.app.models.domain import EmbeddedChunk, ScoredChunk
+from backend.app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

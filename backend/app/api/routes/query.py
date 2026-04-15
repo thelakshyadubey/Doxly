@@ -22,14 +22,14 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
-from app.api.dependencies import get_gemini, get_gemini_embed, get_neo4j, get_qdrant
-from app.config.settings import Settings, get_settings
-from app.models.api import QueryFilters, QueryRequest, QueryResponse
-from app.services.answer_service import AnswerService
-from app.services.retrieval_service import RetrievalService
-from app.stores.neo4j_store import Neo4jStore
-from app.stores.qdrant_store import QdrantStore
-from app.utils.logger import get_logger
+from backend.app.api.dependencies import get_gemini, get_gemini_embed, get_neo4j, get_qdrant
+from backend.app.config.settings import Settings, get_settings
+from backend.app.models.api import QueryFilters, QueryRequest, QueryResponse
+from backend.app.services.answer_service import AnswerService
+from backend.app.services.retrieval_service import RetrievalService
+from backend.app.stores.neo4j_store import Neo4jStore
+from backend.app.stores.qdrant_store import QdrantStore
+from backend.app.utils.logger import get_logger
 
 router = APIRouter(prefix="/query", tags=["query"])
 logger = get_logger(__name__)

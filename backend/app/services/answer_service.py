@@ -23,8 +23,8 @@ import queue
 import threading
 from typing import Any, AsyncIterator
 
-from app.models.domain import AnswerResult, Citation, RankedChunk
-from app.utils.logger import get_logger
+from backend.app.models.domain import AnswerResult, Citation, RankedChunk
+from backend.app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
