@@ -70,7 +70,7 @@ class Settings(BaseSettings):
         description="Filesystem path for local Qdrant storage when qdrant_url is empty.",
     )
     qdrant_vector_size: int = Field(
-        default=768,
+        default=3072,
         description="Embedding dimension — must match the configured embedding model output.",
     )
 
