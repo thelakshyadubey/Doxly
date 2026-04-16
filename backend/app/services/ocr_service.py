@@ -15,7 +15,6 @@ import json
 from typing import Any
 
 import google.generativeai as genai
-from google.generativeai.types import glm
 
 from backend.app.models.domain import OCRResult
 from backend.app.utils.logger import get_logger
@@ -96,9 +95,7 @@ class OCRService:
         Raises:
             RuntimeError: If Gemini returns an empty response.
         """
-        image_part = glm.Part(
-            inline_data=glm.Blob(mime_type=mime_type, data=image_bytes)
-        )
+        image_part = {"mime_type": mime_type, "data": image_bytes}
         response = self._model.generate_content([image_part, _OCR_PROMPT])
 
         raw = response.text.strip() if response.text else ""
