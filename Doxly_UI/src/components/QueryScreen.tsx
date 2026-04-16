@@ -138,7 +138,7 @@ export function QueryScreen({
           {(!answer && !isAnswering) ? (
             <div className="h-full flex flex-col items-center justify-center text-center opacity-70">
                <Sparkles className="w-12 h-12 text-primary/40 mb-4" />
-               <h2 className="text-xl font-medium mb-2">Ask anything about your documents</h2>
+               <h2 className="text-xl font-medium mb-2">Ask anything — about your documents or anything else</h2>
                <p className="text-sm max-w-sm mb-8">
                  Get AI-generated answers with precise citations pointing directly to your Google Drive files.
                </p>

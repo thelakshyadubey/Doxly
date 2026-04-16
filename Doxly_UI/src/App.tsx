@@ -95,6 +95,7 @@ function AppContent() {
           session={session}
           onLogout={handleRevoke}
           onProceed={() => setCurrentScreen("query")}
+          onSkipToChat={() => setCurrentScreen("query")}
         />
       )}
 

@@ -67,11 +67,15 @@ class AnswerService:
             ``AnswerResult`` with answer, citations, and heuristic confidence.
         """
         if not ranked_chunks:
-            return AnswerResult(
-                answer="No relevant documents were found for your query.",
-                citations=[],
-                confidence=0.0,
-            )
+            try:
+                response = await asyncio.to_thread(
+                    self._model.generate_content, query
+                )
+                answer_text = response.text.strip()
+            except Exception as exc:
+                await logger.aerror("answer_service.direct_chat_failed", error=str(exc))
+                raise
+            return AnswerResult(answer=answer_text, citations=[], confidence=0.0)
 
         context_block = self._assemble_context(ranked_chunks)
         user_prompt = f"{context_block}\n\nQuestion: {query}"
@@ -129,13 +133,10 @@ class AnswerService:
             SSE-formatted strings for use with FastAPI ``StreamingResponse``.
         """
         if not ranked_chunks:
-            yield "data: No relevant documents were found for your query.\n\n"
-            yield "data: [DONE]\n\n"
-            return
-
-        context_block = self._assemble_context(ranked_chunks)
-        user_prompt = f"{context_block}\n\nQuestion: {query}"
-        full_prompt = _SYSTEM_PROMPT + "\n\n" + user_prompt
+            full_prompt = query
+        else:
+            context_block = self._assemble_context(ranked_chunks)
+            full_prompt = _SYSTEM_PROMPT + "\n\n" + context_block + "\n\nQuestion: " + query
 
         token_queue: queue.Queue[object] = queue.Queue()
         model = self._model

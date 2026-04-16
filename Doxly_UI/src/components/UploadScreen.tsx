@@ -9,11 +9,13 @@ export function UploadScreen({
   session,
   onLogout,
   onProceed,
+  onSkipToChat,
 }: {
   userId: string;
   session: any; // ReturnType<typeof useSession>
   onLogout: () => void;
   onProceed: () => void;
+  onSkipToChat: () => void;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const { addToast } = useToast();
@@ -151,6 +153,12 @@ export function UploadScreen({
               <UploadCloud className="w-12 h-12 text-zinc-400 mb-4" />
               <p className="text-zinc-700 dark:text-zinc-300 font-medium text-lg">Click or drag documents here</p>
               <p className="text-zinc-500 text-sm mt-2">JPEG, PNG, TIFF, or single-page PDF</p>
+              <button
+                onClick={(e) => { e.stopPropagation(); onSkipToChat(); }}
+                className="mt-6 text-xs text-primary hover:underline font-medium"
+              >
+                Skip — just chat without documents
+              </button>
               {session.isUploading && (
                 <div className="mt-6 flex items-center gap-2 text-primary font-medium text-sm">
                   <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
