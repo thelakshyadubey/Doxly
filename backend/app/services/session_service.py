@@ -142,6 +142,29 @@ class SessionService:
         )
         return count
 
+    async def add_uploaded_file_id(
+        self,
+        user_id: str,
+        session_id: str,
+        file_id: str,
+    ) -> None:
+        """
+        Append a Drive file ID to the session's uploaded file list.
+
+        Called after each image is uploaded to the pending Drive folder so
+        the orchestrator can move files to their permanent location at flush time.
+
+        Args:
+            user_id:    Owning user.
+            session_id: Session UUID.
+            file_id:    Drive file ID of the uploaded image.
+        """
+        session = await self._store.get_session(user_id, session_id)
+        if session is None:
+            raise ValueError(f"Session {session_id} not found")
+        session.uploaded_file_ids.append(file_id)
+        await self._store.save_session(session)
+
     async def set_drive_folder(
         self,
         user_id: str,

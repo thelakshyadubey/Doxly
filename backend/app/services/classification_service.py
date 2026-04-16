@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 from typing import Any
 
@@ -24,21 +25,32 @@ import google.generativeai as genai
 
 from backend.app.models.domain import ClassificationResult, DocType
 from backend.app.utils.logger import get_logger
-from backend.app.utils.token_counter import truncate_to_tokens
 
 logger = get_logger(__name__)
 
 # Number of leading characters sent for classification
 _CLASSIFY_CHAR_LIMIT = 500
 
-_CLASSIFICATION_PROMPT = """Classify the following document excerpt as exactly one of these types:
-[invoice, contract, letter, form, note, report, receipt, other]
+# Cosine similarity threshold for reusing an existing folder label
+_LABEL_SIMILARITY_THRESHOLD = 0.85
+
+_CLASSIFICATION_PROMPT = """Classify the following document excerpt.
 
 Return ONLY valid JSON with no markdown, no explanation, no code fences:
-{{"doc_type": "<type>", "confidence": <float 0.0-1.0>}}
+{{"doc_type": "<one of: invoice, contract, letter, form, note, report, receipt, other>", "folder_label": "<2-4 word descriptive high-level category, e.g. 'Financial Invoice', 'Legal Contract', 'Machine Learning Research'>", "confidence": <float 0.0-1.0>}}
 
 Document excerpt:
 {text}"""
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two vectors."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
 
 
 class ClassificationService:
@@ -46,11 +58,13 @@ class ClassificationService:
     Single-purpose service for classifying a document's type via Gemini.
 
     Args:
-        model: Configured ``google.generativeai.GenerativeModel`` instance.
+        model:            Configured ``google.generativeai.GenerativeModel`` instance.
+        embed_model_name: Gemini embedding model ID used for folder label normalization.
     """
 
-    def __init__(self, model: Any) -> None:
+    def __init__(self, model: Any, embed_model_name: str = "") -> None:
         self._model = model
+        self._embed_model_name = embed_model_name
 
     async def classify(self, text: str) -> ClassificationResult:
         """
@@ -64,12 +78,12 @@ class ClassificationService:
             text: Full or partial document text (may include [PAGE_BREAK] markers).
 
         Returns:
-            ``ClassificationResult`` with ``doc_type`` and ``confidence``.
+            ``ClassificationResult`` with ``doc_type``, ``folder_label``, and ``confidence``.
         """
         excerpt = text[:_CLASSIFY_CHAR_LIMIT].strip()
         if not excerpt:
             await logger.awarning("classification_service.empty_text")
-            return ClassificationResult(doc_type=DocType.OTHER, confidence=0.0)
+            return ClassificationResult(doc_type=DocType.OTHER, confidence=0.0, folder_label="Other Documents")
 
         prompt = _CLASSIFICATION_PROMPT.format(text=excerpt)
 
@@ -83,6 +97,7 @@ class ClassificationService:
             await logger.ainfo(
                 "classification_service.classified",
                 doc_type=result.doc_type,
+                folder_label=result.folder_label,
                 confidence=result.confidence,
             )
             return result
@@ -92,7 +107,76 @@ class ClassificationService:
                 "classification_service.error",
                 error=str(exc),
             )
-            return ClassificationResult(doc_type=DocType.OTHER, confidence=0.0)
+            return ClassificationResult(doc_type=DocType.OTHER, confidence=0.0, folder_label="Other Documents")
+
+    async def normalize_label(
+        self,
+        new_label: str,
+        existing_labels: list[str],
+    ) -> str:
+        """
+        Normalize a new folder label against existing ones using embedding cosine similarity.
+
+        If the most similar existing label exceeds ``_LABEL_SIMILARITY_THRESHOLD``,
+        that existing label is returned so the document lands in the same folder.
+        Otherwise ``new_label`` is returned as-is.
+
+        Args:
+            new_label:       Raw label returned by Gemini for the new document.
+            existing_labels: All canonical labels already in use for this user.
+
+        Returns:
+            Canonical folder label string.
+        """
+        if not existing_labels or not self._embed_model_name:
+            return new_label
+
+        all_labels = [new_label] + existing_labels
+
+        try:
+            embeddings = await asyncio.to_thread(
+                self._embed_labels, all_labels
+            )
+        except Exception as exc:
+            await logger.awarning(
+                "classification_service.normalize_label_embed_failed",
+                error=str(exc),
+            )
+            return new_label
+
+        new_vec = embeddings[0]
+        best_sim = 0.0
+        best_match = new_label
+
+        for i, label in enumerate(existing_labels, start=1):
+            sim = _cosine_similarity(new_vec, embeddings[i])
+            if sim > best_sim:
+                best_sim = sim
+                best_match = label
+
+        if best_sim >= _LABEL_SIMILARITY_THRESHOLD:
+            await logger.ainfo(
+                "classification_service.label_normalized",
+                raw_label=new_label,
+                canonical_label=best_match,
+                similarity=round(best_sim, 3),
+            )
+            return best_match
+
+        return new_label
+
+    def _embed_labels(self, labels: list[str]) -> list[list[float]]:
+        """Synchronous embedding call for a list of short label strings."""
+        result = genai.embed_content(
+            model=self._embed_model_name,
+            content=labels,
+            task_type="retrieval_document",
+        )
+        embedding = result["embedding"]
+        # Normalise: single item → flat list; multiple → list of lists
+        if labels and not isinstance(embedding[0], list):
+            return [embedding]
+        return embedding
 
     # ── Parsing ───────────────────────────────────────────────────────────────
 
@@ -119,7 +203,7 @@ class ClassificationService:
                 raw=raw[:200],
                 error=str(exc),
             )
-            return ClassificationResult(doc_type=DocType.OTHER, confidence=0.0)
+            return ClassificationResult(doc_type=DocType.OTHER, confidence=0.0, folder_label="Other Documents")
 
         raw_type = str(data.get("doc_type", "other")).lower().strip()
         try:
@@ -138,4 +222,15 @@ class ClassificationService:
         except (TypeError, ValueError):
             confidence = 0.0
 
-        return ClassificationResult(doc_type=doc_type, confidence=confidence)
+        # folder_label: free-form descriptive name for the Drive folder
+        folder_label = str(data.get("folder_label", "")).strip()
+        if not folder_label:
+            # Fallback: title-case the doc_type value
+            folder_label = doc_type.value.replace("_", " ").title()
+
+        # Sanitize: remove characters unsafe in Drive folder names
+        folder_label = re.sub(r'[\\/:*?"<>|]', "", folder_label).strip()
+        if not folder_label:
+            folder_label = "Other Documents"
+
+        return ClassificationResult(doc_type=doc_type, confidence=confidence, folder_label=folder_label)

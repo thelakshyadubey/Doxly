@@ -137,8 +137,119 @@ class UserDriveClient:
         """
         return await self.get_or_create_folder(self._app_folder_name, "root")
 
+    async def create_pending_folder(self, session_id: str) -> str:
+        """
+        Create a temporary holding folder for images uploaded before classification.
+
+        Path: My Drive / {app_folder_name} / _pending_{session_id}
+
+        The ``_`` prefix distinguishes temp folders from doc-type folders so they
+        are excluded when listing canonical labels for normalization.
+
+        Args:
+            session_id: Session UUID string.
+
+        Returns:
+            Drive folder ID of the pending folder.
+        """
+        root_folder = await self._get_root_folder_id()
+        return await self.get_or_create_folder(f"_pending_{session_id}", root_folder)
+
+    async def create_doc_type_datetime_folder(
+        self, doc_type_label: str, datetime_str: str
+    ) -> tuple[str, str]:
+        """
+        Create the permanent folder hierarchy for a classified session.
+
+        Path: My Drive / {app_folder_name} / {doc_type_label} / {datetime_str}
+
+        Args:
+            doc_type_label: Canonical high-level label (e.g. "Financial Invoice").
+            datetime_str:   UTC datetime string (e.g. "2024-01-15_14-30-00").
+
+        Returns:
+            Tuple of (doc_type_folder_id, datetime_folder_id).
+        """
+        root_folder = await self._get_root_folder_id()
+        doc_type_folder_id = await self.get_or_create_folder(doc_type_label, root_folder)
+        datetime_folder_id = await self.get_or_create_folder(datetime_str, doc_type_folder_id)
+        return doc_type_folder_id, datetime_folder_id
+
+    async def list_app_subfolder_names(self) -> list[str]:
+        """
+        List the names of direct child folders under the app root folder,
+        excluding folders whose names start with ``_`` (temp/pending folders).
+
+        Returns:
+            List of canonical doc-type folder names.
+        """
+        root_id = await self._get_root_folder_id()
+        return await asyncio.to_thread(self._sync_list_subfolder_names, root_id)
+
+    def _sync_list_subfolder_names(self, parent_id: str) -> list[str]:
+        query = (
+            f"mimeType='application/vnd.google-apps.folder' and "
+            f"'{parent_id}' in parents and trashed=false"
+        )
+        response = (
+            self._service.files()
+            .list(q=query, fields="files(name)", spaces="drive")
+            .execute()
+        )
+        return [
+            f["name"]
+            for f in response.get("files", [])
+            if not f["name"].startswith("_")
+        ]
+
+    async def move_file(
+        self, file_id: str, new_parent_id: str, old_parent_id: str
+    ) -> None:
+        """
+        Move a Drive file from one folder to another.
+
+        Args:
+            file_id:       Drive file ID to move.
+            new_parent_id: Target folder ID.
+            old_parent_id: Current parent folder ID to remove.
+        """
+        await asyncio.to_thread(
+            self._sync_move_file, file_id, new_parent_id, old_parent_id
+        )
+
+    def _sync_move_file(
+        self, file_id: str, new_parent_id: str, old_parent_id: str
+    ) -> None:
+        self._service.files().update(
+            fileId=file_id,
+            addParents=new_parent_id,
+            removeParents=old_parent_id,
+            fields="id,parents",
+        ).execute()
+        logger.info(
+            "drive_service.file_moved",
+            file_id=file_id,
+            new_parent=new_parent_id,
+        )
+
+    async def delete_folder(self, folder_id: str) -> None:
+        """
+        Permanently delete (trash) a Drive folder created by this app.
+
+        Best-effort — callers should catch and log any exception.
+
+        Args:
+            folder_id: Drive folder ID to delete.
+        """
+        await asyncio.to_thread(
+            lambda: self._service.files().delete(fileId=folder_id).execute()
+        )
+        logger.info("drive_service.folder_deleted", folder_id=folder_id)
+
     async def create_session_folder(self, session_id: str, doc_type: str) -> str:
         """
+        Deprecated: kept for compatibility. Use ``create_pending_folder`` instead.
+
         Create the full folder path for a session and return the leaf folder ID.
 
         Path: My Drive / {app_folder_name} / {session_id} / {doc_type}

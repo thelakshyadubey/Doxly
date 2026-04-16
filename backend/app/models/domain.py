@@ -82,6 +82,10 @@ class SessionMetadata(BaseModel):
     user_id: str
     session_id: str
     drive_folder_id: str = Field(default="", description="Drive folder created for this session")
+    uploaded_file_ids: list[str] = Field(
+        default_factory=list,
+        description="Drive file IDs of images uploaded during the upload phase",
+    )
     page_count: int = Field(default=0, ge=0)
     status: SessionStatus = SessionStatus.OPEN
     doc_type: Optional[DocType] = None
@@ -131,6 +135,10 @@ class ClassificationResult(BaseModel):
 
     doc_type: DocType
     confidence: float = Field(..., ge=0.0, le=1.0)
+    folder_label: str = Field(
+        default="",
+        description="Free-form 2-4 word descriptive name used as the Drive folder label",
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────

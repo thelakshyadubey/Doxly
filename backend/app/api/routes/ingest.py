@@ -86,7 +86,7 @@ def _build_orchestrator(
     embed_model: str = request.app.state.gemini_embed_model
 
     session_svc = SessionService(redis, settings.session_threshold_seconds)
-    classifier = ClassificationService(gemini_model)
+    classifier = ClassificationService(gemini_model, embed_model_name=embed_model)
     coref = CorefService(gemini_model)
     chunking = ChunkingService(
         embedding_model_name=embed_model,
@@ -103,6 +103,7 @@ def _build_orchestrator(
         drive_client=drive_client,
         qdrant_store=qdrant,
         neo4j_store=neo4j,
+        redis_store=redis,
     )
 
 
@@ -168,10 +169,10 @@ async def upload_page(
             detail=f"OCR failed: {exc}",
         )
 
-    # Create Drive folder on first page
+    # Create pending Drive folder on first page
     if not session.drive_folder_id:
         try:
-            folder_id = await drive_client.create_session_folder(session_id, "pending")
+            folder_id = await drive_client.create_pending_folder(session_id)
             await session_svc.set_drive_folder(user_id, session_id, folder_id)
         except Exception as exc:
             await logger.awarning(
@@ -183,16 +184,17 @@ async def upload_page(
     else:
         folder_id = session.drive_folder_id
 
-    # Upload original image to user's Drive (best-effort)
+    # Upload original image to user's Drive (best-effort) and track file ID
     if folder_id:
         try:
             page_count_so_far = session.page_count + 1
-            await drive_client.upload_bytes(
+            page_file_id = await drive_client.upload_bytes(
                 folder_id,
                 f"original_page_{page_count_so_far}{_ext(file.filename)}",
                 image_bytes,
                 mime_type=file.content_type or "image/jpeg",
             )
+            await session_svc.add_uploaded_file_id(user_id, session_id, page_file_id)
         except Exception as exc:
             await logger.awarning(
                 "ingest.drive_upload_failed",

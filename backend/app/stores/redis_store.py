@@ -28,6 +28,7 @@ logger = get_logger(__name__)
 _SESSION_KEY = "session:{user_id}:{session_id}"
 _TOKENS_KEY = "tokens:{user_id}"
 _OAUTH_STATE_KEY = "oauth_state:{state}"
+_FOLDER_LABELS_KEY = "folder_labels:{user_id}"
 _OAUTH_STATE_TTL = 600  # seconds — must complete OAuth flow within 10 minutes
 
 
@@ -214,6 +215,39 @@ class RedisStore:
             True if tokens exist in Redis, False otherwise.
         """
         return bool(await self._client.exists(self._tokens_key(user_id)))
+
+    # ── Folder label registry (classification normalization) ──────────────────
+
+    def _folder_labels_key(self, user_id: str) -> str:
+        return _FOLDER_LABELS_KEY.format(user_id=user_id)
+
+    async def get_folder_labels(self, user_id: str) -> list[str]:
+        """
+        Return all known canonical folder labels for a user.
+
+        Stored as a Redis Set so duplicates are naturally prevented.
+
+        Args:
+            user_id: Owning user identifier.
+
+        Returns:
+            List of label strings (order is arbitrary).
+        """
+        members = await self._client.smembers(self._folder_labels_key(user_id))
+        return list(members)
+
+    async def add_folder_label(self, user_id: str, label: str) -> None:
+        """
+        Register a canonical folder label for a user.
+
+        Idempotent — adding an already-known label is a no-op.
+
+        Args:
+            user_id: Owning user identifier.
+            label:   Canonical folder label to register.
+        """
+        await self._client.sadd(self._folder_labels_key(user_id), label)
+        await logger.adebug("redis_store.folder_label_added", user_id=user_id, label=label)
 
     # ── OAuth state (CSRF protection) ─────────────────────────────────────────
 
