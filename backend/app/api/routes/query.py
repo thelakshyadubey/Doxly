@@ -17,7 +17,7 @@ GET /query/stream
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
@@ -189,11 +189,20 @@ async def query_stream(
             detail=f"Retrieval failed: {exc}",
         )
 
+    async def _stream_with_retry_hint() -> AsyncIterator[str]:
+        # Emit a retry hint first so SSE clients wait 3 s before reconnecting
+        # on any transient disconnect (instead of the default 3000 ms which can
+        # hammer the server on repeated failures).
+        yield "retry: 3000\n\n"
+        async for chunk in answer_svc.answer_stream(query, ranked_chunks):
+            yield chunk
+
     return StreamingResponse(
-        answer_svc.answer_stream(query, ranked_chunks),
+        _stream_with_retry_hint(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
             "X-Accel-Buffering": "no",  # disable nginx buffering for SSE
         },
     )

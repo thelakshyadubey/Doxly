@@ -35,7 +35,20 @@ _SYSTEM_PROMPT = (
     "Always cite the exact source path and page number for every claim."
 )
 
+_NO_CONTEXT_MSG = (
+    "No relevant documents were found for your query. "
+    "Please upload documents first, then ask questions about them."
+)
+
 _SENTINEL = object()  # signals end of stream from producer thread
+_ERROR_SENTINEL = object()  # sentinel class marker — actual exc is wrapped below
+
+
+class _StreamError:
+    """Wraps an exception so it can be distinguished from real tokens in the queue."""
+
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
 
 
 class AnswerService:
@@ -67,30 +80,22 @@ class AnswerService:
             ``AnswerResult`` with answer, citations, and heuristic confidence.
         """
         if not ranked_chunks:
-            try:
-                response = await asyncio.to_thread(
-                    self._model.generate_content, query
-                )
-                answer_text = response.text.strip()
-            except Exception as exc:
-                await logger.aerror("answer_service.direct_chat_failed", error=str(exc))
-                raise
-            return AnswerResult(answer=answer_text, citations=[], confidence=0.0)
+            return AnswerResult(answer=_NO_CONTEXT_MSG, citations=[], confidence=0.0)
 
         context_block = self._assemble_context(ranked_chunks)
-        user_prompt = f"{context_block}\n\nQuestion: {query}"
+        full_prompt = _SYSTEM_PROMPT + "\n\n" + context_block + "\n\nQuestion: " + query
 
         try:
             response = await asyncio.to_thread(
-                self._model.generate_content,
-                [
-                    {"role": "user", "parts": [_SYSTEM_PROMPT + "\n\n" + user_prompt]},
-                ],
+                self._model.generate_content, full_prompt
             )
-            answer_text = response.text.strip()
+            answer_text = _safe_text(response)
         except Exception as exc:
             await logger.aerror("answer_service.generation_failed", error=str(exc))
             raise
+
+        if not answer_text:
+            answer_text = "Gemini returned an empty or blocked response. Please try rephrasing your question."
 
         citations = self._build_citations(ranked_chunks)
         confidence = self._heuristic_confidence(ranked_chunks)
@@ -119,6 +124,9 @@ class AnswerService:
         Stream the Gemini response as Server-Sent Events.
 
         Yields SSE strings of the form ``data: {token}\\n\\n``.
+        Multiline tokens are split so every line is prefixed with ``data:``
+        (required by the SSE spec — a bare newline inside a data value ends the
+        event prematurely in most browsers/clients).
         The final event is ``data: [DONE]\\n\\n``.
 
         The Gemini streaming iterator is synchronous, so it is consumed in a
@@ -133,44 +141,74 @@ class AnswerService:
             SSE-formatted strings for use with FastAPI ``StreamingResponse``.
         """
         if not ranked_chunks:
-            full_prompt = query
-        else:
-            context_block = self._assemble_context(ranked_chunks)
-            full_prompt = _SYSTEM_PROMPT + "\n\n" + context_block + "\n\nQuestion: " + query
+            yield _sse_event(_NO_CONTEXT_MSG)
+            yield "data: [DONE]\n\n"
+            return
 
-        token_queue: queue.Queue[object] = queue.Queue()
+        context_block = self._assemble_context(ranked_chunks)
+        full_prompt = _SYSTEM_PROMPT + "\n\n" + context_block + "\n\nQuestion: " + query
+
+        token_queue: queue.Queue[object] = queue.Queue(maxsize=256)
+        stop_event = threading.Event()
         model = self._model
 
         def _produce() -> None:
-            """Run Gemini streaming in a thread, push tokens to the queue."""
+            """Run Gemini streaming in a thread; push tokens into the queue."""
             try:
                 stream = model.generate_content(full_prompt, stream=True)
                 for chunk in stream:
+                    if stop_event.is_set():
+                        # Client disconnected — abort early so the thread exits.
+                        break
                     token = getattr(chunk, "text", None)
                     if token:
                         token_queue.put(token)
             except Exception as exc:  # noqa: BLE001
-                token_queue.put(exc)
+                token_queue.put(_StreamError(exc))
             finally:
                 token_queue.put(_SENTINEL)
 
-        loop = asyncio.get_running_loop()
         thread = threading.Thread(target=_produce, daemon=True)
         thread.start()
 
+        loop = asyncio.get_running_loop()
+        had_error = False
+
         try:
             while True:
-                # Poll the queue asynchronously so we don't block the event loop.
+                # Poll the queue via run_in_executor so the event loop stays free.
                 item = await loop.run_in_executor(None, token_queue.get)
+
                 if item is _SENTINEL:
                     break
-                if isinstance(item, Exception):
-                    await logger.aerror("answer_service.stream_failed", error=str(item))
-                    yield f"data: [ERROR] {item}\n\n"
+
+                if isinstance(item, _StreamError):
+                    await logger.aerror(
+                        "answer_service.stream_chunk_failed",
+                        error=str(item.exc),
+                    )
+                    yield _sse_event(
+                        f"[ERROR] Generation failed mid-stream: {item.exc}"
+                    )
+                    had_error = True
                     break
-                yield f"data: {item}\n\n"
+
+                # Normal token — sanitise for SSE and yield.
+                yield _sse_event(str(item))
+
+        except asyncio.CancelledError:
+            # Client disconnected — tell the producer thread to stop.
+            stop_event.set()
+            raise
+
         finally:
+            stop_event.set()  # always signal the thread to exit
             yield "data: [DONE]\n\n"
+
+        if had_error:
+            await logger.awarning("answer_service.stream_ended_with_error")
+        else:
+            await logger.ainfo("answer_service.stream_complete")
 
     # ── Context assembly ──────────────────────────────────────────────────────
 
@@ -233,3 +271,65 @@ class AnswerService:
         # Normalise: a perfect single-source rank-1 hit scores 1/(60+1) ≈ 0.016
         # Two sources at rank 1 → ≈ 0.033.  Cap at 0.1 as "max plausible".
         return min(top_score / 0.1, 1.0)
+
+
+# ── SSE helpers ────────────────────────────────────────────────────────────────
+
+
+def _safe_text(response: Any) -> str:
+    """
+    Safely extract text from a Gemini ``GenerateContentResponse``.
+
+    ``response.text`` raises ``ValueError`` when the response is blocked by
+    safety filters or contains multiple parts.  This helper falls back to
+    manually concatenating candidate parts so callers always get a string.
+
+    Args:
+        response: ``GenerateContentResponse`` from ``generate_content``.
+
+    Returns:
+        Extracted text, or empty string if nothing could be extracted.
+    """
+    # Fast path — works for normal single-part responses.
+    try:
+        text = response.text
+        if text:
+            return text.strip()
+    except Exception:
+        pass
+
+    # Fallback — walk candidates → parts manually.
+    try:
+        parts: list[str] = []
+        for candidate in response.candidates:
+            for part in candidate.content.parts:
+                if hasattr(part, "text") and part.text:
+                    parts.append(part.text)
+        text = "".join(parts).strip()
+        if text:
+            return text
+    except Exception:
+        pass
+
+    return ""
+
+
+def _sse_event(token: str) -> str:
+    """
+    Format a string as a valid SSE ``data`` event.
+
+    The SSE spec requires that each logical line in the data value be sent as
+    a separate ``data: <line>`` field.  A bare ``\\n`` inside a single
+    ``data:`` value terminates the event early in most clients.
+
+    Args:
+        token: Raw text to encode as an SSE event.
+
+    Returns:
+        SSE-formatted string ending with the double-newline event terminator.
+    """
+    # Normalise all newline variants to \\n, then split into lines.
+    normalised = token.replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalised.split("\n")
+    body = "\n".join(f"data: {line}" for line in lines)
+    return body + "\n\n"

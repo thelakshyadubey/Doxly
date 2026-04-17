@@ -173,7 +173,10 @@ class ChunkingService:
 
     async def _embed_in_batches(self, chunks: list[Chunk]) -> list[EmbeddedChunk]:
         """
-        Embed all chunks in batches, returning ``EmbeddedChunk`` objects.
+        Embed all chunks in batches concurrently, returning ``EmbeddedChunk`` objects.
+
+        All batches are dispatched in parallel via ``asyncio.gather`` so that
+        multiple Gemini embedding calls overlap instead of running sequentially.
 
         Args:
             chunks: Flat list of ``Chunk`` objects to embed.
@@ -181,11 +184,18 @@ class ChunkingService:
         Returns:
             Matching list of ``EmbeddedChunk`` with vectors populated.
         """
+        batches = [
+            chunks[i : i + self._batch_size]
+            for i in range(0, len(chunks), self._batch_size)
+        ]
+
+        batch_vectors: list[list[list[float]]] = await asyncio.gather(*[
+            asyncio.to_thread(self._embed_batch, [c.enriched_text for c in batch])
+            for batch in batches
+        ])
+
         embedded: list[EmbeddedChunk] = []
-        for batch_start in range(0, len(chunks), self._batch_size):
-            batch = chunks[batch_start : batch_start + self._batch_size]
-            texts = [c.enriched_text for c in batch]
-            vectors = await asyncio.to_thread(self._embed_batch, texts)
+        for batch, vectors in zip(batches, batch_vectors):
             for chunk, vector in zip(batch, vectors):
                 embedded.append(EmbeddedChunk(chunk=chunk, vector=vector))
 

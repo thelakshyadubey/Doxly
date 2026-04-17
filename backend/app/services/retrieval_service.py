@@ -90,12 +90,15 @@ class RetrievalService:
         Returns:
             Ordered list of up to ``FINAL_TOP_K`` ``RankedChunk`` objects.
         """
-        # Step 1: Extract query entities
-        query_entities = await self._extract_query_entities(query)
+        # Step 1 + Step 2 setup: entity extraction and query embedding are independent
+        # — run them concurrently so neither waits on the other.
+        query_entities, query_vector = await asyncio.gather(
+            self._extract_query_entities(query),
+            asyncio.to_thread(self._embed_query, query),
+        )
 
-        # Step 2: Parallel retrieval
-        query_vector = await asyncio.to_thread(self._embed_query, query)
-
+        # Step 2: Both sources are now ready — kick off vector search and graph
+        # traversal in parallel.
         vector_task = asyncio.to_thread(
             self._qdrant.search,
             query_vector,
@@ -108,19 +111,15 @@ class RetrievalService:
 
         vector_hits, graph_chunk_ids = await asyncio.gather(vector_task, graph_task)
 
-        # Step 2c: Fetch parent chunks for top vector hits
-        parent_ids = [
+        # Step 2c + Step 3: Fetch parent chunks and graph-matched chunks in parallel.
+        parent_ids = list(set(
             h.payload.get("parent_chunk_id")
             for h in vector_hits
             if h.payload.get("parent_chunk_id")
-        ]
-        parent_hits: list[ScoredChunk] = await asyncio.to_thread(
-            self._qdrant.get_by_ids, list(set(parent_ids))
-        )
-
-        # Step 3: Fetch graph-matched chunks from Qdrant
-        graph_hits: list[ScoredChunk] = await asyncio.to_thread(
-            self._qdrant.get_by_ids, list(set(graph_chunk_ids))
+        ))
+        parent_hits, graph_hits = await asyncio.gather(
+            asyncio.to_thread(self._qdrant.get_by_ids, parent_ids),
+            asyncio.to_thread(self._qdrant.get_by_ids, list(set(graph_chunk_ids))),
         )
 
         # Step 4: RRF fusion

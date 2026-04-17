@@ -43,7 +43,14 @@ Document:
 
 _COREF_RESOLUTION_PROMPT = """Using the entity map below, replace every pronoun (it, they, he, she, \
 this, that, these, those) and every ambiguous reference with its canonical entity name from the map.
-Preserve all original punctuation, line breaks, spacing, and [PAGE_BREAK] markers exactly.
+
+CRITICAL RULES — violating these makes the output unusable:
+1. Do NOT alter any parenthetical that immediately follows an acronym or proper noun and contains its \
+definition or expansion. For example: "OASIS (open agent social interaction simulation)" must remain \
+exactly as written — never rewrite it as "OASIS (OASIS)".
+2. Only resolve genuine pronouns and ambiguous references (words like "it", "they", "this system", etc.) \
+that refer back to an entity mentioned earlier.
+3. Preserve all original punctuation, line breaks, spacing, and [PAGE_BREAK] markers exactly.
 Return ONLY the resolved text — no explanation, no JSON, no code fences.
 
 Entity map:
@@ -183,6 +190,7 @@ class CorefService:
             if not resolved:
                 await logger.awarning("coref_service.empty_resolved_text")
                 return text
+            resolved = self._restore_corrupted_parentheticals(text, resolved)
             await logger.ainfo(
                 "coref_service.resolution_complete",
                 original_chars=len(text),
@@ -195,3 +203,60 @@ class CorefService:
                 error=str(exc),
             )
             return text
+
+    # ── Post-processing ───────────────────────────────────────────────────────
+
+    # Matches "ACRONYM (ACRONYM)" — i.e. Gemini replaced an expansion with the
+    # same canonical name it already appears as: "OASIS (OASIS)".
+    _SELF_REF_PAREN = re.compile(r'\b([A-Z][A-Z0-9]{1,})\s*\(\1\)')
+
+    # Matches the original form in raw text: "ACRONYM (any expansion at least 4 chars)"
+    _ORIGINAL_PAREN = re.compile(r'\b([A-Z][A-Z0-9]{1,})\s*\(([^)]{4,})\)')
+
+    def _restore_corrupted_parentheticals(self, original: str, resolved: str) -> str:
+        """
+        Safety net for Option-C post-processing.
+
+        Detects any ``ACRONYM (ACRONYM)`` patterns that Gemini introduced in the
+        resolved text (meaning it replaced a definitional expansion with the
+        canonical name), and restores the original ``ACRONYM (expansion)`` text
+        found in the raw OCR.
+
+        Args:
+            original: Raw OCR text before coref resolution.
+            resolved: Gemini-resolved text that may contain corrupted spans.
+
+        Returns:
+            Resolved text with definitional parentheticals restored.
+        """
+        # Build a lookup: acronym → original expansion from raw text
+        original_expansions: dict[str, str] = {}
+        for match in self._ORIGINAL_PAREN.finditer(original):
+            acronym, expansion = match.group(1), match.group(2)
+            # Only store if the expansion is actually different from the acronym
+            if expansion.strip().upper() != acronym:
+                original_expansions[acronym] = expansion
+
+        if not original_expansions:
+            return resolved
+
+        restored = resolved
+        corrupted_found = 0
+
+        def _fix(m: re.Match) -> str:
+            nonlocal corrupted_found
+            acronym = m.group(1)
+            if acronym in original_expansions:
+                corrupted_found += 1
+                return f"{acronym} ({original_expansions[acronym]})"
+            return m.group(0)
+
+        restored = self._SELF_REF_PAREN.sub(_fix, restored)
+
+        if corrupted_found:
+            logger.warning(
+                "coref_service.restored_corrupted_parentheticals",
+                count=corrupted_found,
+            )
+
+        return restored
