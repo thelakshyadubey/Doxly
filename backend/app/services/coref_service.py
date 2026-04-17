@@ -73,20 +73,17 @@ class CorefService:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    async def resolve(self, text: str) -> tuple[str, EntityMap]:
+    async def extract_entities(self, text: str) -> EntityMap:
         """
-        Run both passes and return the resolved text with its entity map.
+        Extract named entities from the document (Pass 1 only).
 
         Args:
             text: Full document text, pages separated by ``[PAGE_BREAK]``.
 
         Returns:
-            A tuple of ``(resolved_text, entity_map)``.
-            Falls back to ``(original_text, empty_entity_map)`` on any error.
+            ``EntityMap`` populated with extracted entities, or empty on failure.
         """
-        entity_map = await self._extract_entities(text)
-        resolved_text = await self._resolve_references(text, entity_map)
-        return resolved_text, entity_map
+        return await self._extract_entities(text)
 
     # ── Pass 1: entity extraction ─────────────────────────────────────────────
 

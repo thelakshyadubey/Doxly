@@ -75,7 +75,6 @@ class RetrievalService:
         self,
         query: str,
         user_id: str,
-        doc_type: Optional[str] = None,
         session_id: Optional[str] = None,
     ) -> list[RankedChunk]:
         """
@@ -84,7 +83,6 @@ class RetrievalService:
         Args:
             query:      Natural-language question string.
             user_id:    Mandatory tenant filter.
-            doc_type:   Optional document type filter for Qdrant search.
             session_id: Optional session filter for Qdrant search.
 
         Returns:
@@ -104,7 +102,6 @@ class RetrievalService:
             query_vector,
             user_id,
             self._top_k,
-            doc_type,
             session_id,
         )
         graph_task = self._graph_search(query_entities, user_id)
@@ -265,7 +262,6 @@ class RetrievalService:
                     rrf_score=rrf_scores[cid],
                     chunk_text=p.get("chunk_text", ""),
                     source_drive_path=p.get("source_drive_path", ""),
-                    doc_type=p.get("doc_type", ""),
                     page_num=int(p.get("page_num", 0)),
                 )
             )

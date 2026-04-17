@@ -136,7 +136,6 @@ class QdrantStore:
         index_fields: dict[str, PayloadSchemaType] = {
             "user_id": PayloadSchemaType.KEYWORD,
             "session_id": PayloadSchemaType.KEYWORD,
-            "doc_type": PayloadSchemaType.KEYWORD,
             "page_num": PayloadSchemaType.INTEGER,
             "role": PayloadSchemaType.KEYWORD,
         }
@@ -172,7 +171,6 @@ class QdrantStore:
             payload = {
                 "user_id": c.user_id,
                 "session_id": c.session_id,
-                "doc_type": c.doc_type.value if c.doc_type else None,
                 "page_num": c.page_num,
                 "chunk_index": c.chunk_index,
                 "role": c.role.value,
@@ -214,20 +212,18 @@ class QdrantStore:
         query_vector: list[float],
         user_id: str,
         top_k: int,
-        doc_type: Optional[str] = None,
         session_id: Optional[str] = None,
     ) -> list[ScoredChunk]:
         """
         Perform a filtered vector search.
 
         ``user_id`` is always applied as a strict filter for tenant isolation.
-        ``doc_type`` and ``session_id`` are optional additional filters.
+        ``session_id`` is an optional additional filter.
 
         Args:
-            query_vector: Query embedding (768 dims).
+            query_vector: Query embedding.
             user_id:      Mandatory tenant filter.
             top_k:        Number of results to return.
-            doc_type:     Optional document type filter.
             session_id:   Optional session filter.
 
         Returns:
@@ -236,10 +232,6 @@ class QdrantStore:
         must_conditions: list[FieldCondition] = [
             FieldCondition(key="user_id", match=MatchValue(value=user_id))
         ]
-        if doc_type:
-            must_conditions.append(
-                FieldCondition(key="doc_type", match=MatchValue(value=doc_type))
-            )
         if session_id:
             must_conditions.append(
                 FieldCondition(key="session_id", match=MatchValue(value=session_id))

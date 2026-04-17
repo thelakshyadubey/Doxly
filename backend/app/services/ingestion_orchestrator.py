@@ -6,18 +6,17 @@ Coordinates the full post-upload ingestion pipeline.
 Pipeline triggered by POST /ingest/flush/{session_id}:
 
     1.  Fetch session text from Redis
-    2.  Classify document type + free-form folder label (Gemini)
-    2b. Normalize folder label against existing labels (embedding cosine similarity)
+    2.  Parallel: classify + entity extraction (Pass 1 only) + fetch folder registry
+    2b. Normalize folder label against existing labels (Gemini semantic routing)
     3.  Create Drive folder: {app_folder}/{canonical_label}/{datetime}/
-    3b. Move uploaded images from pending folder to datetime folder
+    3b. Move uploaded images from pending folder to datetime folder (parallel)
     4.  Upload raw OCR text to datetime folder
-    5.  Run coreference resolution (Gemini 2-pass)
-    6.  Chunk + embed resolved text (tiktoken + Gemini embeddings)
-    7.  Upsert embedded chunks into Qdrant
-    8.  Write session + chunk + entity graph into Neo4j
-    9.  Register canonical label in Redis for future normalization
-   10.  Clean up pending Drive folder (best-effort)
-   11.  Mark session as INDEXED in Redis
+    5.  Parallel: Drive folder setup + chunk + embed (tiktoken + Gemini embeddings)
+    6.  Upsert embedded chunks into Qdrant
+    7.  Write session + chunk + entity graph into Neo4j (UNWIND batched)
+    8.  Register canonical label in Redis for future normalization
+    9.  Clean up pending Drive folder (best-effort)
+   10.  Mark session as INDEXED in Redis
 
 Any unhandled exception transitions the session to FAILED and re-raises.
 """
@@ -27,7 +26,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
-from backend.app.models.domain import DocType, SessionMetadata
+from backend.app.models.domain import SessionMetadata
 from backend.app.services.chunking_service import ChunkingService
 from backend.app.services.classification_service import ClassificationService
 from backend.app.services.coref_service import CorefService
@@ -49,7 +48,7 @@ class IngestionOrchestrator:
     Args:
         session_service:         Manages session lifecycle in Redis.
         classification_service:  Classifies document type via Gemini.
-        coref_service:           Two-pass coreference resolution via Gemini.
+        coref_service:           Entity extraction (Pass 1 only — no text rewriting).
         chunking_service:        Parent-child chunking and Gemini embedding.
         drive_client:            Per-user Drive client; uploads artefacts to the
                                  user's own Google Drive.
@@ -135,27 +134,34 @@ class IngestionOrchestrator:
         pending_folder_id = session.drive_folder_id
         uploaded_file_ids = list(session.uploaded_file_ids)
 
-        # 2. Parallel: classify + full coref + fetch existing folder labels
-        #    All three read independent inputs — no reason to wait on each other.
-        (classification, (resolved_text, entity_map), existing_labels) = await asyncio.gather(
+        # 2. Parallel: classify + entity extraction (Pass 1 only) + fetch folder registry.
+        #    All three are independent — run concurrently to overlap Gemini latency.
+        classification, entity_map, folder_registry = await asyncio.gather(
             self._classifier.classify(raw_text),
-            self._coref.resolve(raw_text),
-            self._redis.get_folder_labels(user_id),
+            self._coref.extract_entities(raw_text),
+            self._redis.get_folder_registry(user_id),
         )
 
-        doc_type: DocType = classification.doc_type
-        raw_folder_label: str = classification.folder_label or doc_type.value.replace("_", " ").title()
+        raw_folder_label: str = classification.folder_label or "General"
+        topic_summary: str = classification.topic_summary
 
         await logger.ainfo(
             "ingestion_orchestrator.classified",
             session_id=session_id,
-            doc_type=doc_type,
             raw_folder_label=raw_folder_label,
+            topic_summary=topic_summary[:120],
             confidence=classification.confidence,
         )
 
-        # 3. Normalize folder label (embedding cosine similarity against existing labels)
-        canonical_label = await self._classifier.normalize_label(raw_folder_label, existing_labels)
+        # 3. Route to existing folder (Gemini-assisted semantic matching) or
+        #    create a new one.  Gemini understands that "RAG" and "Retrieval
+        #    Augmented Generation" are the same topic; cosine similarity on
+        #    short label strings does not.
+        canonical_label = await self._classifier.route_to_folder(
+            topic_summary=topic_summary,
+            raw_label=raw_folder_label,
+            folder_registry=folder_registry,
+        )
 
         await logger.ainfo(
             "ingestion_orchestrator.label_resolved",
@@ -198,11 +204,10 @@ class IngestionOrchestrator:
         datetime_folder_id, embedded_chunks = await asyncio.gather(
             _drive_setup(),
             self._chunking.chunk_and_embed(
-                resolved_text=resolved_text,
+                resolved_text=raw_text,
                 entity_map=entity_map,
                 session_id=session_id,
                 user_id=user_id,
-                doc_type=doc_type,
                 source_drive_path=drive_folder_path,
             ),
         )
@@ -215,19 +220,16 @@ class IngestionOrchestrator:
         await self._neo4j.create_session_node(
             user_id=user_id,
             session_id=session_id,
-            doc_type=doc_type.value,
             drive_folder_path=drive_folder_path,
         )
 
         child_chunks = [ec.chunk for ec in embedded_chunks if ec.chunk.role.value == "child"]
 
-        # Upsert all chunk nodes in parallel, then all entity links in parallel.
-        # Entity links need the chunk nodes to exist first, so two separate gathers.
-        await asyncio.gather(*[self._neo4j.upsert_chunk(chunk) for chunk in child_chunks])
-        await asyncio.gather(*[
-            self._neo4j.upsert_entities(chunk.chunk_id, entity_map)
-            for chunk in child_chunks
-        ])
+        # Upsert all chunk nodes in one UNWIND query, then entity links in one batch.
+        await self._neo4j.upsert_chunks(child_chunks)
+        await self._neo4j.upsert_entities_batch(
+            [(c.chunk_id, entity_map) for c in child_chunks]
+        )
 
         # 8. Register label + clean up pending folder — both best-effort, run together.
         async def _cleanup_pending() -> None:
@@ -243,7 +245,7 @@ class IngestionOrchestrator:
                 )
 
         await asyncio.gather(
-            self._redis.add_folder_label(user_id, canonical_label),
+            self._redis.add_folder_to_registry(user_id, canonical_label, topic_summary),
             _cleanup_pending(),
         )
 
@@ -253,7 +255,6 @@ class IngestionOrchestrator:
         return {
             "chunk_count": chunk_count,
             "entity_count": entity_count,
-            "doc_type": doc_type.value,
             "folder_label": canonical_label,
             "drive_folder_path": drive_folder_path,
         }

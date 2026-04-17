@@ -20,19 +20,6 @@ from pydantic import BaseModel, Field
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-class DocType(str, Enum):
-    """Recognised document categories returned by the classification service."""
-
-    INVOICE = "invoice"
-    CONTRACT = "contract"
-    LETTER = "letter"
-    FORM = "form"
-    NOTE = "note"
-    REPORT = "report"
-    RECEIPT = "receipt"
-    OTHER = "other"
-
-
 class ChunkRole(str, Enum):
     """Distinguishes parent page chunks from child sliding-window chunks."""
 
@@ -88,7 +75,6 @@ class SessionMetadata(BaseModel):
     )
     page_count: int = Field(default=0, ge=0)
     status: SessionStatus = SessionStatus.OPEN
-    doc_type: Optional[DocType] = None
     accumulated_text: str = Field(
         default="",
         description="Running concatenation of OCR output, pages separated by [PAGE_BREAK]",
@@ -133,11 +119,17 @@ class EntityMap(BaseModel):
 class ClassificationResult(BaseModel):
     """Output from the classification service."""
 
-    doc_type: DocType
     confidence: float = Field(..., ge=0.0, le=1.0)
     folder_label: str = Field(
         default="",
         description="Free-form 2-4 word descriptive name used as the Drive folder label",
+    )
+    topic_summary: str = Field(
+        default="",
+        description=(
+            "1-2 sentence description of what the document is fundamentally about. "
+            "Used by the routing step to match against existing folder topics."
+        ),
     )
 
 
@@ -167,7 +159,6 @@ class Chunk(BaseModel):
     parent_chunk_id: Optional[str] = Field(
         default=None, description="chunk_id of the parent page chunk (None for parents)"
     )
-    doc_type: Optional[DocType] = None
     entity_map: EntityMap = Field(default_factory=EntityMap)
     source_drive_path: str = Field(default="")
 
@@ -176,7 +167,7 @@ class EmbeddedChunk(BaseModel):
     """A Chunk paired with its embedding vector, ready for Qdrant upsert."""
 
     chunk: Chunk
-    vector: list[float] = Field(..., description="768-dim embedding of chunk.enriched_text")
+    vector: list[float] = Field(..., description="Embedding of chunk.enriched_text")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -199,7 +190,6 @@ class RankedChunk(BaseModel):
     rrf_score: float
     chunk_text: str
     source_drive_path: str
-    doc_type: str
     page_num: int
 
 

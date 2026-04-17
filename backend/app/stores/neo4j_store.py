@@ -126,7 +126,6 @@ class Neo4jStore:
         self,
         user_id: str,
         session_id: str,
-        doc_type: str,
         drive_folder_path: str,
     ) -> None:
         """
@@ -135,7 +134,6 @@ class Neo4jStore:
         Args:
             user_id:           Owning user.
             session_id:        Session UUID.
-            doc_type:          Classified document type string.
             drive_folder_path: Drive folder URL/path for this session.
         """
         created_at = datetime.now(timezone.utc).isoformat()
@@ -144,87 +142,105 @@ class Neo4jStore:
                 """
                 MERGE (u:User {user_id: $user_id})
                 MERGE (s:Session {session_id: $session_id})
-                SET s.doc_type = $doc_type,
-                    s.created_at = $created_at,
+                SET s.created_at = $created_at,
                     s.drive_folder_path = $drive_folder_path
                 MERGE (u)-[:OWNS]->(s)
                 """,
                 user_id=user_id,
                 session_id=session_id,
-                doc_type=doc_type,
                 created_at=created_at,
                 drive_folder_path=drive_folder_path,
             )
 
-    async def upsert_chunk(self, chunk: Chunk) -> None:
+    async def upsert_chunks(self, chunks: list[Chunk]) -> None:
         """
-        MERGE a Chunk node and link it to its parent Session.
+        MERGE all Chunk nodes and their Session links in a single UNWIND query.
 
         Args:
-            chunk: Domain ``Chunk`` object.
+            chunks: List of domain ``Chunk`` objects to upsert.
         """
-        text_preview = chunk.text[:_PREVIEW_LEN]
+        if not chunks:
+            return
+        rows = [
+            {
+                "chunk_id": c.chunk_id,
+                "chunk_index": c.chunk_index,
+                "page_num": c.page_num,
+                "text_preview": c.text[:_PREVIEW_LEN],
+                "role": c.role.value,
+                "session_id": c.session_id,
+            }
+            for c in chunks
+        ]
         async with self._driver.session() as session:
             await session.run(
                 """
-                MERGE (c:Chunk {chunk_id: $chunk_id})
-                SET c.chunk_index = $chunk_index,
-                    c.page_num = $page_num,
-                    c.text_preview = $text_preview,
-                    c.role = $role
-                WITH c
-                MATCH (s:Session {session_id: $session_id})
+                UNWIND $rows AS row
+                MERGE (c:Chunk {chunk_id: row.chunk_id})
+                SET c.chunk_index  = row.chunk_index,
+                    c.page_num     = row.page_num,
+                    c.text_preview = row.text_preview,
+                    c.role         = row.role
+                WITH c, row
+                MATCH (s:Session {session_id: row.session_id})
                 MERGE (s)-[:CONTAINS]->(c)
                 """,
-                chunk_id=chunk.chunk_id,
-                chunk_index=chunk.chunk_index,
-                page_num=chunk.page_num,
-                text_preview=text_preview,
-                role=chunk.role.value,
-                session_id=chunk.session_id,
+                rows=rows,
             )
 
-    async def upsert_entities(
-        self, chunk_id: str, entity_map: EntityMap
+    async def upsert_entities_batch(
+        self, chunk_entity_pairs: list[tuple[str, EntityMap]]
     ) -> None:
         """
-        MERGE Entity nodes and link them to the Chunk via MENTIONS.
-
-        Also creates ALIAS_OF relationships between surface-form aliases and
-        the canonical entity node.
+        MERGE all Entity nodes, MENTIONS links, and ALIAS_OF relationships in
+        two UNWIND queries (one for entity nodes + mentions, one for aliases).
 
         Args:
-            chunk_id:   UUID of the chunk that mentions these entities.
-            entity_map: Extracted entity data.
+            chunk_entity_pairs: List of (chunk_id, EntityMap) tuples.
         """
-        async with self._driver.session() as session:
-            for entity in entity_map.entities:
-                # Create canonical entity node and connect to chunk
-                await session.run(
-                    """
-                    MERGE (e:Entity {canonical: $canonical})
-                    SET e.type = $type
-                    WITH e
-                    MATCH (c:Chunk {chunk_id: $chunk_id})
-                    MERGE (c)-[:MENTIONS]->(e)
-                    """,
-                    canonical=entity.canonical,
-                    type=entity.type,
-                    chunk_id=chunk_id,
-                )
+        entity_rows: list[dict] = []
+        alias_rows: list[dict] = []
 
-                # Create alias nodes that point back to the canonical
+        for chunk_id, entity_map in chunk_entity_pairs:
+            for entity in entity_map.entities:
+                entity_rows.append(
+                    {
+                        "chunk_id": chunk_id,
+                        "canonical": entity.canonical,
+                        "type": entity.type,
+                    }
+                )
                 for alias in entity.aliases:
                     if alias and alias != entity.canonical:
-                        await session.run(
-                            """
-                            MERGE (a:Entity {canonical: $alias})
-                            MERGE (c:Entity {canonical: $canonical})
-                            MERGE (a)-[:ALIAS_OF]->(c)
-                            """,
-                            alias=alias,
-                            canonical=entity.canonical,
+                        alias_rows.append(
+                            {"alias": alias, "canonical": entity.canonical}
                         )
+
+        if not entity_rows:
+            return
+
+        async with self._driver.session() as session:
+            await session.run(
+                """
+                UNWIND $rows AS row
+                MERGE (e:Entity {canonical: row.canonical})
+                SET e.type = row.type
+                WITH e, row
+                MATCH (c:Chunk {chunk_id: row.chunk_id})
+                MERGE (c)-[:MENTIONS]->(e)
+                """,
+                rows=entity_rows,
+            )
+            if alias_rows:
+                await session.run(
+                    """
+                    UNWIND $rows AS row
+                    MERGE (a:Entity {canonical: row.alias})
+                    MERGE (cn:Entity {canonical: row.canonical})
+                    MERGE (a)-[:ALIAS_OF]->(cn)
+                    """,
+                    rows=alias_rows,
+                )
 
     # ── Retrieval queries ─────────────────────────────────────────────────────
 

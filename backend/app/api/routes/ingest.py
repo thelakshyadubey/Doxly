@@ -11,7 +11,7 @@ POST /ingest/upload
 
 POST /ingest/flush/{session_id}
     Manually closes the session window and triggers the full pipeline:
-    classification → coref → chunking → Qdrant + Neo4j writes.
+    classification → chunking → Qdrant + Neo4j writes.
     Returns chunk/entity counts and doc_type when complete.
 
 Both endpoints require the user to have completed OAuth authorization first
@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 
 from backend.app.config.settings import Settings, get_settings
 from backend.app.models.api import FlushResponse, UploadResponse
-from backend.app.models.domain import DocType, SessionStatus
+from backend.app.models.domain import SessionStatus
 from backend.app.services.chunking_service import ChunkingService
 from backend.app.services.classification_service import ClassificationService
 from backend.app.services.coref_service import CorefService
@@ -230,7 +230,7 @@ async def upload_page(
     response_model=FlushResponse,
     summary="Trigger full ingestion pipeline for a session",
     description=(
-        "Manually close the session window and run classification → coref → "
+        "Manually close the session window and run classification → "
         "chunking → Qdrant/Neo4j writes. Idempotent if the session is already INDEXED. "
         "Requires prior OAuth authorization via GET /auth/login."
     ),
@@ -261,7 +261,6 @@ async def flush_session(
             session_id=session_id,
             chunk_count=0,
             entity_count=0,
-            doc_type=session.doc_type or DocType.OTHER,
             status=SessionStatus.INDEXED,
         )
 
@@ -290,7 +289,6 @@ async def flush_session(
         session_id=session_id,
         chunk_count=result["chunk_count"],
         entity_count=result["entity_count"],
-        doc_type=DocType(result["doc_type"]),
         status=SessionStatus.INDEXED,
     )
 

@@ -29,6 +29,7 @@ _SESSION_KEY = "session:{user_id}:{session_id}"
 _TOKENS_KEY = "tokens:{user_id}"
 _OAUTH_STATE_KEY = "oauth_state:{state}"
 _FOLDER_LABELS_KEY = "folder_labels:{user_id}"
+_FOLDER_REGISTRY_KEY = "folder_registry:{user_id}"
 _OAUTH_STATE_TTL = 600  # seconds — must complete OAuth flow within 10 minutes
 
 
@@ -248,6 +249,49 @@ class RedisStore:
         """
         await self._client.sadd(self._folder_labels_key(user_id), label)
         await logger.adebug("redis_store.folder_label_added", user_id=user_id, label=label)
+
+    # ── Folder registry (name → topic summary) ────────────────────────────────
+
+    def _folder_registry_key(self, user_id: str) -> str:
+        return _FOLDER_REGISTRY_KEY.format(user_id=user_id)
+
+    async def get_folder_registry(self, user_id: str) -> dict[str, str]:
+        """
+        Return a mapping of canonical folder name → topic summary for a user.
+
+        Stored as a Redis Hash so name lookups and updates are O(1).
+
+        Args:
+            user_id: Owning user identifier.
+
+        Returns:
+            Dict mapping each folder name to its topic summary string.
+            Empty dict if the user has no folders yet.
+        """
+        result = await self._client.hgetall(self._folder_registry_key(user_id))
+        return dict(result) if result else {}
+
+    async def add_folder_to_registry(
+        self, user_id: str, name: str, topic_summary: str
+    ) -> None:
+        """
+        Register a folder with its topic summary.
+
+        Idempotent — calling again with the same name updates the topic summary.
+
+        Args:
+            user_id:       Owning user identifier.
+            name:          Canonical folder name (the Drive folder label).
+            topic_summary: 1-2 sentence description of what this folder contains.
+        """
+        await self._client.hset(
+            self._folder_registry_key(user_id), name, topic_summary
+        )
+        await logger.adebug(
+            "redis_store.folder_registry_updated",
+            user_id=user_id,
+            name=name,
+        )
 
     # ── OAuth state (CSRF protection) ─────────────────────────────────────────
 

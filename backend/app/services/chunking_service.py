@@ -26,7 +26,6 @@ import google.generativeai as genai
 from backend.app.models.domain import (
     Chunk,
     ChunkRole,
-    DocType,
     EmbeddedChunk,
     EntityMap,
 )
@@ -70,7 +69,6 @@ class ChunkingService:
         entity_map: EntityMap,
         session_id: str,
         user_id: str,
-        doc_type: DocType | None,
         source_drive_path: str,
     ) -> list[EmbeddedChunk]:
         """
@@ -81,7 +79,6 @@ class ChunkingService:
             entity_map:        Entity map from the coref service.
             session_id:        Session UUID.
             user_id:           Owning user identifier.
-            doc_type:          Classified document type.
             source_drive_path: Drive path for source attribution in payloads.
 
         Returns:
@@ -104,7 +101,6 @@ class ChunkingService:
                 text=page_text,
                 enriched_text=page_text,  # parents are not entity-header-enriched
                 parent_chunk_id=None,
-                doc_type=doc_type,
                 entity_map=entity_map,
                 source_drive_path=source_drive_path,
             )
@@ -123,7 +119,6 @@ class ChunkingService:
                     text=child_text,
                     enriched_text=enriched,
                     parent_chunk_id=parent_chunk_id,
-                    doc_type=doc_type,
                     entity_map=entity_map,
                     source_drive_path=source_drive_path,
                 )

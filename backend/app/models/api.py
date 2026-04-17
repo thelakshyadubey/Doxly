@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from backend.app.models.domain import AnswerResult, Citation, DocType, SessionStatus
+from backend.app.models.domain import AnswerResult, Citation, SessionStatus
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -45,7 +45,6 @@ class FlushResponse(BaseModel):
     session_id: str
     chunk_count: int = Field(..., description="Number of child chunks written to Qdrant")
     entity_count: int = Field(..., description="Distinct entities written to Neo4j")
-    doc_type: DocType
     status: SessionStatus = SessionStatus.INDEXED
 
 
@@ -57,9 +56,6 @@ class FlushResponse(BaseModel):
 class QueryFilters(BaseModel):
     """Optional narrowing filters applied during retrieval."""
 
-    doc_type: Optional[DocType] = Field(
-        default=None, description="Restrict retrieval to a specific document type"
-    )
     session_id: Optional[str] = Field(
         default=None, description="Restrict retrieval to a specific session"
     )
