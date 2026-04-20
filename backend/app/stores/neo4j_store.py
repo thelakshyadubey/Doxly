@@ -291,6 +291,95 @@ class Neo4jStore:
             )
             return [record["chunk_id"] async for record in result]
 
+    async def get_chunk_subgraph(
+        self, chunk_ids: list[str], user_id: str
+    ) -> dict:
+        """
+        Return a nodes-and-edges subgraph for the given chunks.
+
+        Fetches each chunk, its parent Session, and all Entity nodes it
+        MENTIONS.  Deduplicates nodes and edges before returning.
+
+        Args:
+            chunk_ids: UUIDs of chunks to include (typically from citations).
+            user_id:   Tenant filter — ensures the session is owned by this user.
+
+        Returns:
+            Dict with keys ``nodes`` (list of node dicts) and ``edges``
+            (list of edge dicts with source / target / relation).
+        """
+        if not chunk_ids:
+            return {"nodes": [], "edges": []}
+
+        async with self._driver.session() as neo_session:
+            result = await neo_session.run(
+                """
+                UNWIND $chunk_ids AS cid
+                MATCH (c:Chunk {chunk_id: cid})
+                OPTIONAL MATCH (s:Session)-[:CONTAINS]->(c)
+                OPTIONAL MATCH (c)-[:MENTIONS]->(e:Entity)
+                RETURN
+                  c.chunk_id    AS chunk_id,
+                  c.page_num    AS page_num,
+                  c.text_preview AS text_preview,
+                  c.role        AS role,
+                  s.session_id  AS session_id,
+                  collect(DISTINCT {canonical: e.canonical, type: e.type}) AS entities
+                """,
+                chunk_ids=chunk_ids,
+                user_id=user_id,
+            )
+            rows = [dict(record) async for record in result]
+
+        nodes: dict[str, dict] = {}
+        edges: list[dict] = []
+        seen_edges: set[tuple] = set()
+
+        for row in rows:
+            chunk_id = row["chunk_id"]
+            session_id = row["session_id"]
+
+            if session_id and session_id not in nodes:
+                nodes[session_id] = {
+                    "id": session_id,
+                    "label": f"Session {session_id[:8]}",
+                    "node_type": "session",
+                }
+
+            if chunk_id not in nodes:
+                nodes[chunk_id] = {
+                    "id": chunk_id,
+                    "label": f"Page {row['page_num']}",
+                    "node_type": "chunk",
+                    "page_num": row["page_num"],
+                    "text_preview": row["text_preview"],
+                    "role": row["role"],
+                }
+
+            if session_id:
+                key = (session_id, chunk_id, "CONTAINS")
+                if key not in seen_edges:
+                    edges.append({"source": session_id, "target": chunk_id, "relation": "CONTAINS"})
+                    seen_edges.add(key)
+
+            for entity in row["entities"]:
+                canonical = entity.get("canonical")
+                if not canonical:
+                    continue
+                if canonical not in nodes:
+                    nodes[canonical] = {
+                        "id": canonical,
+                        "label": canonical,
+                        "node_type": "entity",
+                        "entity_type": entity.get("type"),
+                    }
+                key = (chunk_id, canonical, "MENTIONS")
+                if key not in seen_edges:
+                    edges.append({"source": chunk_id, "target": canonical, "relation": "MENTIONS"})
+                    seen_edges.add(key)
+
+        return {"nodes": list(nodes.values()), "edges": edges}
+
     async def get_entity_subgraph(self, session_id: str) -> list[dict]:
         """
         Return the full entity relationship graph for a session.

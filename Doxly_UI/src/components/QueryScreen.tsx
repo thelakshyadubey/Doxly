@@ -101,6 +101,7 @@ export function QueryScreen({
               citations={citations}
               isAnswering={isAnswering}
               isComplete={isComplete}
+              userId={userId}
             />
           )}
         </div>

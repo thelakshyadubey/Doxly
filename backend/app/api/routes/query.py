@@ -10,10 +10,10 @@ POST /query
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from backend.app.config.settings import Settings, get_settings
-from backend.app.models.api import QueryRequest, QueryResponse
+from backend.app.models.api import GraphEdge, GraphNode, GraphResponse, QueryRequest, QueryResponse
 from backend.app.services.answer_service import AnswerService
 from backend.app.services.retrieval_service import RetrievalService
 from backend.app.stores.neo4j_store import Neo4jStore
@@ -85,4 +85,34 @@ async def query(
         answer=result.answer,
         citations=result.citations,
         confidence=result.confidence,
+    )
+
+
+@router.get(
+    "/graph",
+    response_model=GraphResponse,
+    summary="Reasoning subgraph for cited chunks",
+    description=(
+        "Return the Neo4j subgraph (Session → Chunk → Entity) for the given "
+        "chunk IDs. Pass the chunk_ids from a /query citation list to visualise "
+        "how the answer was derived."
+    ),
+)
+async def query_graph(
+    request: Request,
+    user_id: str = Query(..., description="Owning user identifier"),
+    chunk_ids: list[str] = Query(..., description="Chunk UUIDs from citation list"),
+) -> GraphResponse:
+    neo4j: Neo4jStore = request.app.state.neo4j_store
+    try:
+        raw = await neo4j.get_chunk_subgraph(chunk_ids, user_id)
+    except Exception as exc:
+        await logger.aerror("query.graph_failed", error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Graph query failed: {exc}",
+        )
+    return GraphResponse(
+        nodes=[GraphNode(**n) for n in raw["nodes"]],
+        edges=[GraphEdge(**e) for e in raw["edges"]],
     )

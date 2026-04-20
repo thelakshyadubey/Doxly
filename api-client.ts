@@ -16,16 +16,6 @@
 // Enums
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type DocType =
-  | "invoice"
-  | "contract"
-  | "letter"
-  | "form"
-  | "note"
-  | "report"
-  | "receipt"
-  | "other";
-
 export type SessionStatus =
   | "open"
   | "queued"
@@ -76,7 +66,6 @@ export interface FlushResponse {
   session_id: string;
   chunk_count: number;
   entity_count: number;
-  doc_type: DocType;
   status: SessionStatus;
 }
 
@@ -92,6 +81,27 @@ export interface QueryResponse {
   confidence: number;
 }
 
+export interface GraphNode {
+  id: string;
+  label: string;
+  node_type: "session" | "chunk" | "entity";
+  page_num?: number;
+  text_preview?: string;
+  role?: string;
+  entity_type?: string;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  relation: string;
+}
+
+export interface GraphResponse {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
 export interface ErrorResponse {
   error: string;
   message: string;
@@ -103,7 +113,6 @@ export interface ErrorResponse {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface QueryFilters {
-  doc_type?: DocType;
   session_id?: string;
 }
 
@@ -277,49 +286,16 @@ export function createApiClient(baseUrl: string = "http://localhost:8000") {
       },
 
       /**
-       * Ask a question with streaming (Server-Sent Events).
-       * Calls onToken for each chunk of text as it arrives.
-       * Calls onDone when the stream is complete.
-       * Calls onError if something goes wrong.
+       * Fetch the Neo4j reasoning subgraph for the given chunk IDs.
+       * Pass the chunk_ids from a QueryResponse's citations array.
        *
-       * @example
-       * api.query.stream(
-       *   { user_id: "alice", query: "Summarize the contract" },
-       *   (token) => setAnswer(prev => prev + token),
-       *   () => setLoading(false),
-       *   (err) => console.error(err)
-       * );
+       * @param userId   - Owning user
+       * @param chunkIds - chunk_id values from Citation objects
        */
-      stream(
-        req: QueryRequest,
-        onToken: (token: string) => void,
-        onDone: () => void,
-        onError: (error: Error) => void
-      ): void {
-        const params = new URLSearchParams({
-          user_id: req.user_id,
-          query: req.query,
-        });
-        if (req.filters) {
-          params.set("filters", JSON.stringify(req.filters));
-        }
-
-        const url = `${base}/query/stream?${params.toString()}`;
-        const source = new EventSource(url);
-
-        source.onmessage = (event) => {
-          if (event.data === "[DONE]") {
-            source.close();
-            onDone();
-          } else {
-            onToken(event.data);
-          }
-        };
-
-        source.onerror = (event) => {
-          source.close();
-          onError(new Error("SSE stream error"));
-        };
+      graph(userId: string, chunkIds: string[]): Promise<GraphResponse> {
+        const params = new URLSearchParams({ user_id: userId });
+        chunkIds.forEach((id) => params.append("chunk_ids", id));
+        return request(base, `/query/graph?${params.toString()}`);
       },
     },
   };

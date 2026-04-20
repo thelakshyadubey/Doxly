@@ -96,10 +96,6 @@ export function UploadScreen({
           <h2 className="text-2xl font-semibold mb-2 text-emerald-950 dark:text-emerald-50">Analysis Complete</h2>
           <div className="flex justify-center gap-6 text-sm mb-8 text-emerald-800 dark:text-emerald-200">
             <div>
-              <span className="block text-2xl font-bold text-emerald-600 dark:text-emerald-400">{session.docType}</span>
-              <span className="opacity-70 uppercase tracking-wider text-[10px] font-bold">Doc Type</span>
-            </div>
-            <div>
               <span className="block text-2xl font-bold text-emerald-600 dark:text-emerald-400">{session.chunkCount}</span>
               <span className="opacity-70 uppercase tracking-wider text-[10px] font-bold">Chunks</span>
             </div>

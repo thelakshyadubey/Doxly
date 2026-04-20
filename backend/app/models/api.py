@@ -78,6 +78,38 @@ class QueryResponse(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Query — GET /query/graph
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class GraphNode(BaseModel):
+    """A node in the reasoning knowledge graph."""
+
+    id: str
+    label: str
+    node_type: str = Field(..., description="'session' | 'chunk' | 'entity'")
+    page_num: Optional[int] = None
+    text_preview: Optional[str] = None
+    role: Optional[str] = None
+    entity_type: Optional[str] = None
+
+
+class GraphEdge(BaseModel):
+    """A directed edge in the reasoning knowledge graph."""
+
+    source: str
+    target: str
+    relation: str = Field(..., description="'CONTAINS' | 'MENTIONS' | 'ALIAS_OF'")
+
+
+class GraphResponse(BaseModel):
+    """Subgraph of chunks, sessions, and entities used to derive an answer."""
+
+    nodes: list[GraphNode] = Field(default_factory=list)
+    edges: list[GraphEdge] = Field(default_factory=list)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Health
 # ──────────────────────────────────────────────────────────────────────────────
 

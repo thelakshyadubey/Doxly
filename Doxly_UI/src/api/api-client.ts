@@ -68,7 +68,6 @@ export interface FlushResponse {
   session_id: string;
   chunk_count: number;
   entity_count: number;
-  doc_type: DocType;
   status: SessionStatus;
 }
 
@@ -84,6 +83,27 @@ export interface QueryResponse {
   confidence: number;
 }
 
+export interface GraphNode {
+  id: string;
+  label: string;
+  node_type: "session" | "chunk" | "entity";
+  page_num?: number;
+  text_preview?: string;
+  role?: string;
+  entity_type?: string;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  relation: string;
+}
+
+export interface GraphResponse {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
 export interface ErrorResponse {
   error: string;
   message: string;
@@ -95,7 +115,6 @@ export interface ErrorResponse {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface QueryFilters {
-  doc_type?: DocType;
   session_id?: string;
 }
 
@@ -225,36 +244,10 @@ export function createApiClient(baseUrl: string = "http://localhost:8000") {
         });
       },
 
-      stream(
-        req: QueryRequest,
-        onToken: (token: string) => void,
-        onDone: () => void,
-        onError: (error: Error) => void
-      ): void {
-        const params = new URLSearchParams({
-          user_id: req.user_id,
-          query: req.query,
-        });
-        if (req.filters) {
-          params.set("filters", JSON.stringify(req.filters));
-        }
-
-        const url = `${base}/query/stream?${params.toString()}`;
-        const source = new EventSource(url);
-
-        source.onmessage = (event) => {
-          if (event.data === "[DONE]") {
-            source.close();
-            onDone();
-          } else {
-            onToken(event.data);
-          }
-        };
-
-        source.onerror = () => {
-          source.close();
-          onError(new Error("SSE stream error"));
-        };
+      graph(userId: string, chunkIds: string[]): Promise<GraphResponse> {
+        const params = new URLSearchParams({ user_id: userId });
+        chunkIds.forEach((id) => params.append("chunk_ids", id));
+        return request(base, `/query/graph?${params.toString()}`);
       },
     },
   };
