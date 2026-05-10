@@ -31,6 +31,7 @@ from backend.app.services.classification_service import ClassificationService
 from backend.app.services.coref_service import CorefService
 from backend.app.services.drive_service import DriveService, UserDriveClient
 from backend.app.services.ingestion_orchestrator import IngestionOrchestrator
+from backend.app.services.esp32_image_service import ESP32ImageService
 from backend.app.services.ocr_service import OCRService
 from backend.app.services.session_service import SessionService
 from backend.app.stores.neo4j_store import Neo4jStore
@@ -40,6 +41,8 @@ from backend.app.utils.logger import get_logger
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 logger = get_logger(__name__)
+
+_esp32_image_svc = ESP32ImageService()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -290,6 +293,124 @@ async def flush_session(
         chunk_count=result["chunk_count"],
         entity_count=result["entity_count"],
         status=SessionStatus.INDEXED,
+    )
+
+
+# ── POST /ingest/esp32 ────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/esp32",
+    response_model=UploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Upload a raw ESP32 camera frame",
+    description=(
+        "Accepts a raw RGB565 or Grayscale binary frame from an ESP32 camera. "
+        "Converts to JPEG, runs OCR, and enters the same session pipeline as /upload. "
+        "Requires prior OAuth authorization via GET /auth/login."
+    ),
+)
+async def upload_esp32_frame(
+    request:  Request,
+    user_id:  str        = Form(...,              description="Owning user identifier (must have completed OAuth)"),
+    mac:      str        = Form(...,              description="Device MAC address e.g. AABBCCDDEEFF"),
+    width:    int        = Form(...,              description="Frame width in pixels"),
+    height:   int        = Form(...,              description="Frame height in pixels"),
+    format:   str        = Form(default="RGB565", description="RGB565 or L"),
+    image:    UploadFile = File(...,              description="Raw binary frame from ESP32 camera"),
+    settings: Settings   = Depends(get_settings),
+) -> UploadResponse:
+    raw = await image.read()
+    if not raw:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Raw frame is empty.",
+        )
+
+    # Convert raw binary → JPEG
+    try:
+        jpeg_bytes, actual_width, actual_height = _esp32_image_svc.to_jpeg_bytes(
+            raw, width, height, format
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    await logger.ainfo(
+        "ingest.esp32_frame_received",
+        mac=mac,
+        declared=f"{width}x{height}",
+        actual=f"{actual_width}x{actual_height}",
+        raw_bytes=len(raw),
+        jpeg_bytes=len(jpeg_bytes),
+    )
+
+    # OAuth check — identical to upload_page
+    drive_client = await _require_drive_client(user_id, request, settings)
+
+    ocr_service: OCRService = request.app.state.ocr_service
+    redis: RedisStore       = request.app.state.redis_store
+    session_svc             = SessionService(redis, settings.session_threshold_seconds)
+
+    session    = await session_svc.get_or_create_session(user_id)
+    session_id = session.session_id
+
+    # OCR on the JPEG
+    try:
+        ocr_result = await ocr_service.extract_text(jpeg_bytes, mime_type="image/jpeg")
+    except Exception as exc:
+        await logger.aerror("ingest.esp32_ocr_failed", session_id=session_id, error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"OCR failed: {exc}",
+        )
+
+    # Create pending Drive folder on first frame
+    if not session.drive_folder_id:
+        try:
+            folder_id = await drive_client.create_pending_folder(session_id)
+            await session_svc.set_drive_folder(user_id, session_id, folder_id)
+        except Exception as exc:
+            await logger.awarning(
+                "ingest.esp32_drive_folder_failed", session_id=session_id, error=str(exc)
+            )
+            folder_id = ""
+    else:
+        folder_id = session.drive_folder_id
+
+    # Upload the JPEG (not raw binary) to the user's Drive
+    if folder_id:
+        try:
+            page_count_so_far = session.page_count + 1
+            page_file_id = await drive_client.upload_bytes(
+                folder_id,
+                f"esp32_{mac}_frame_{page_count_so_far}.jpg",
+                jpeg_bytes,
+                mime_type="image/jpeg",
+            )
+            await session_svc.add_uploaded_file_id(user_id, session_id, page_file_id)
+        except Exception as exc:
+            await logger.awarning(
+                "ingest.esp32_drive_upload_failed", session_id=session_id, error=str(exc)
+            )
+
+    # Accumulate OCR text into session
+    page_count = await session_svc.record_page(user_id, session_id, ocr_result.text)
+
+    # Persist potentially-refreshed OAuth tokens
+    await redis.save_user_tokens(user_id, drive_client.get_current_tokens())
+
+    await logger.ainfo(
+        "ingest.esp32_page_uploaded",
+        session_id=session_id,
+        mac=mac,
+        page_count=page_count,
+        ocr_chars=len(ocr_result.text),
+    )
+
+    return UploadResponse(
+        session_id=session_id,
+        page_count=page_count,
+        status=SessionStatus.QUEUED,
     )
 
 

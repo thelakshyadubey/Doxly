@@ -33,6 +33,10 @@ redis==5.0.4                     # standard redis-py with asyncio support
 # ── Token counting ────────────────────────────────────────────────────────────
 tiktoken==0.7.0
 
+# ── Image processing (ESP32 raw frame → JPEG conversion) ─────────────────────
+pillow==10.4.0
+numpy==1.26.4
+
 # ── Async utilities ───────────────────────────────────────────────────────────
 anyio==4.3.0
 
