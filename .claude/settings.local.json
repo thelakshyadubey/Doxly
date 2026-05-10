@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(npm install *)",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "mcp__code-review-graph__get_architecture_overview_tool"
     ]
   },
   "enableAllProjectMcpServers": true,
