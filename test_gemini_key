@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""
+Gemini API Key Tester
+Usage: python test_gemini_key.py --key YOUR_API_KEY
+   or: GEMINI_API_KEY=your_key python test_gemini_key.py
+"""
+
+import sys
+import os
+import json
+import argparse
+import urllib.request
+import urllib.error
+
+# ── Config ─────────────────────────────────────────────────────────────────────
+DEFAULT_MODEL = "gemini-1.5-flash"
+TEST_PROMPT   = "Say hello in one sentence."
+BASE_URL      = "https://generativelanguage.googleapis.com/v1beta/models"
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+def ok(msg):  print(f"  ✅  {msg}")
+def fail(msg): print(f"  ❌  {msg}")
+def info(msg): print(f"  ℹ️   {msg}")
+def sep():     print("─" * 55)
+
+# ── Tests ──────────────────────────────────────────────────────────────────────
+def test_list_models(api_key):
+    """Check that the key can reach the models endpoint."""
+    url = f"{BASE_URL}?key={api_key}"
+    req = urllib.request.Request(url, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        models = [m["name"] for m in data.get("models", [])]
+        ok(f"Key is valid — {len(models)} model(s) returned")
+        gemini_models = [m for m in models if "gemini" in m.lower()]
+        if gemini_models:
+            info(f"Gemini models available: {', '.join(gemini_models[:5])}")
+        return True
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        try:
+            msg = json.loads(body)["error"]["message"]
+        except Exception:
+            msg = body[:200]
+        fail(f"HTTP {e.code}: {msg}")
+        return False
+    except urllib.error.URLError as e:
+        fail(f"Network error: {e.reason}")
+        return False
+
+
+def test_generate_content(api_key, model=DEFAULT_MODEL):
+    """Send a simple prompt and check for a valid response."""
+    url = f"{BASE_URL}/{model}:generateContent?key={api_key}"
+    payload = json.dumps({
+        "contents": [{"parts": [{"text": TEST_PROMPT}]}]
+    }).encode()
+    req = urllib.request.Request(
+        url, data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read())
+        candidates = data.get("candidates", [])
+        if candidates:
+            text = candidates[0]["content"]["parts"][0]["text"].strip()
+            ok(f"Generation succeeded with model '{model}'")
+            info(f"Response: \"{text}\"")
+            usage = data.get("usageMetadata", {})
+            if usage:
+                info(f"Tokens — prompt: {usage.get('promptTokenCount','?')}, "
+                     f"output: {usage.get('candidatesTokenCount','?')}")
+            return True
+        else:
+            fail("No candidates returned (check safety filters or quota)")
+            return False
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        try:
+            err = json.loads(body)["error"]
+            msg = f"HTTP {err.get('code')}: {err.get('message')}"
+        except Exception:
+            msg = f"HTTP {e.code}: {body[:200]}"
+        fail(msg)
+        if e.code == 429:
+            info("Quota exceeded — the key works but you've hit a rate limit.")
+        elif e.code == 400:
+            info(f"Model '{model}' may not be available for your project.")
+        return False
+    except urllib.error.URLError as e:
+        fail(f"Network error: {e.reason}")
+        return False
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+def main():
+    parser = argparse.ArgumentParser(description="Test a Gemini API key")
+    parser.add_argument("--key", "-k", help="Gemini API key (or set GEMINI_API_KEY env var)")
+    parser.add_argument("--model", "-m", default=DEFAULT_MODEL, help=f"Model to test (default: {DEFAULT_MODEL})")
+    args = parser.parse_args()
+
+    api_key = args.key or os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        print("Error: provide a key via --key or the GEMINI_API_KEY environment variable.")
+        sys.exit(1)
+
+    masked = api_key[:6] + "…" + api_key[-4:] if len(api_key) > 10 else "***"
+    print(f"\n🔑 Testing Gemini API key: {masked}")
+    sep()
+
+    print("\n[1] Checking key validity (list models) …")
+    valid = test_list_models(api_key)
+
+    sep()
+    print(f"\n[2] Testing content generation (model: {args.model}) …")
+    generated = test_generate_content(api_key, args.model)
+
+    sep()
+    print()
+    if valid and generated:
+        print("🎉 All tests passed — your key is working correctly!\n")
+        sys.exit(0)
+    elif valid:
+        print("⚠️  Key is valid but generation failed (see details above).\n")
+        sys.exit(1)
+    else:
+        print("🚫 Key validation failed — check the key and try again.\n")
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

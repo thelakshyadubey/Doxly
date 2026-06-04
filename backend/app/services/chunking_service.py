@@ -19,6 +19,8 @@ Embedding:
 from __future__ import annotations
 
 import asyncio
+import random
+import time
 from typing import Any
 
 import google.generativeai as genai
@@ -168,10 +170,11 @@ class ChunkingService:
 
     async def _embed_in_batches(self, chunks: list[Chunk]) -> list[EmbeddedChunk]:
         """
-        Embed all chunks in batches concurrently, returning ``EmbeddedChunk`` objects.
+        Embed all chunks in sequential batches with 429 retry/backoff.
 
-        All batches are dispatched in parallel via ``asyncio.gather`` so that
-        multiple Gemini embedding calls overlap instead of running sequentially.
+        Batches run one at a time (not parallel) to stay within Gemini free-tier
+        RPM limits. Each batch retries up to 5 times with exponential backoff on
+        rate-limit errors before re-raising.
 
         Args:
             chunks: Flat list of ``Chunk`` objects to embed.
@@ -184,13 +187,9 @@ class ChunkingService:
             for i in range(0, len(chunks), self._batch_size)
         ]
 
-        batch_vectors: list[list[list[float]]] = await asyncio.gather(*[
-            asyncio.to_thread(self._embed_batch, [c.enriched_text for c in batch])
-            for batch in batches
-        ])
-
         embedded: list[EmbeddedChunk] = []
-        for batch, vectors in zip(batches, batch_vectors):
+        for batch in batches:
+            vectors = await self._embed_batch_with_retry([c.enriched_text for c in batch])
             for chunk, vector in zip(batch, vectors):
                 embedded.append(EmbeddedChunk(chunk=chunk, vector=vector))
 
@@ -199,6 +198,29 @@ class ChunkingService:
             embedded=len(embedded),
         )
         return embedded
+
+    async def _embed_batch_with_retry(
+        self, texts: list[str], max_retries: int = 5
+    ) -> list[list[float]]:
+        """Retry ``_embed_batch`` with exponential backoff on Gemini 429 errors."""
+        delay = 10.0
+        for attempt in range(max_retries + 1):
+            try:
+                return await asyncio.to_thread(self._embed_batch, texts)
+            except Exception as exc:
+                msg = str(exc)
+                is_rate_limit = "429" in msg or "resource exhausted" in msg.lower()
+                if not is_rate_limit or attempt >= max_retries:
+                    raise
+                wait = delay + random.uniform(0, delay * 0.1)
+                await logger.awarning(
+                    "chunking_service.embed_rate_limited",
+                    attempt=attempt + 1,
+                    wait_seconds=round(wait, 1),
+                )
+                await asyncio.sleep(wait)
+                delay = min(delay * 2, 60.0)
+        raise RuntimeError("unreachable")
 
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         """
